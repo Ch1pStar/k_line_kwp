@@ -60,6 +60,38 @@ static inline void uart_tx_program_puts(PIO pio, uint sm, const char *s) {
 
 %}
 
+
+.program ecu_wakeup_slow
+    set pins, 0     ; somehow wait 200ms
+    set pins, 1     ; somehow wait 400ms
+    set pins, 0     ; somehow wait 400ms
+    set pins, 1     ; somehow wait 400ms
+    set pins, 0     ; somehow wait 400ms
+    set pins, 1     ; somehow wait 227ms
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+static inline void ecu_wakeup_slow_program_init(PIO pio, uint sm, uint offset, uint pin_tx) {
+    // Tell PIO to initially drive output-high on the selected pin, then map PIO
+    // onto that pin with the IO muxes.
+    pio_sm_set_pins_with_mask(pio, sm, 1u << pin_tx, 1u << pin_tx);
+    pio_sm_set_pindirs_with_mask(pio, sm, 1u << pin_tx, 1u << pin_tx);
+    pio_gpio_init(pio, pin_tx);
+
+    pio_sm_config c = uart_tx_program_get_default_config(offset);
+
+    sm_config_set_set_pins(&c, pin_tx, 1);
+
+    // SM transmits 1 bit per 8 execution cycles.
+    float div = (float)clock_get_hz(clk_sys) / (8 * 500);
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_init(pio, sm, offset, &c);
+}
+
+%}
+
 .program uart_rx_mini
 
 ; Minimum viable 8n1 UART receiver. Wait for the start bit, then sample 8 bits

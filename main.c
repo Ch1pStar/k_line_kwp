@@ -14,33 +14,24 @@
 
 #include "uart_rx.pio.h"
 
-#define SERIAL_BAUD PICO_DEFAULT_UART_BAUD_RATE
-#define HARD_UART_INST uart1
-
-#define HARD_UART_RX_PIN 5
-#define HARD_UART_TX_PIN 4
+// #define SERIAL_BAUD PICO_DEFAULT_UART_BAUD_RATE
+#define SERIAL_BAUD 10400
 
 #define PIO_RX_PIN 3
 #define PIO_TX_PIN 2
 
-
-#define DATA_BITS 8
-#define STOP_BITS 1
-#define PARITY    UART_PARITY_NONE
-
-const char *text = "Hello, world from PIO! (Plus 2 UARTs and 2 cores, for complex reasons)\n";
-static int chars_rxed = 0;
-
 void delay_start() {
-    // for(short i=0;i<15;i++) {
-    //     printf("Starting in %d\n", 15-i);
-    //     sleep_ms(1000);
-    // }
     int ch;
 
     while ((ch = getchar()) != 's') {
         continue;
     }
+
+    // for(short i=0;i<4;i++) {
+    //     printf("Starting in %d\n", 4-i);
+    //     sleep_ms(1000);
+    // }
+
 }
 
 PIO pio_tx = pio1;
@@ -61,78 +52,85 @@ void init_pio_rx() {
     uart_rx_program_init(pio, sm, offset, PIO_RX_PIN, SERIAL_BAUD);
 }
 
-// RX interrupt handler
-void on_uart_rx() {
-    while (uart_is_readable(HARD_UART_INST)) {
-        uint8_t ch = uart_getc(HARD_UART_INST);
-        // Can we send it back?
-        // if (uart_is_writable(HARD_UART_INST)) {
-        //     // Change it slightly first!
-        //     ch++;
-        //     uart_putc(HARD_UART_INST, ch);
-        // }
+void wakeup_slow() {
+    printf("Bit toggle\n");
+    gpio_put(PIO_TX_PIN, 0);
+    sleep_ms(200);
 
-        putchar(ch);
-        chars_rxed++;
+    gpio_put(PIO_TX_PIN, 1);
+    sleep_ms(400);
+
+    gpio_put(PIO_TX_PIN, 0);
+    sleep_ms(400);
+
+    gpio_put(PIO_TX_PIN, 1);
+    sleep_ms(400);
+
+    gpio_put(PIO_TX_PIN, 0);
+    sleep_ms(400);
+
+    gpio_put(PIO_TX_PIN, 1);
+    sleep_ms(227);
+}
+
+
+uint32_t init_comm_protocol() {
+    // initial state, line is high
+    gpio_put(PIO_TX_PIN, 1);
+    delay_start();
+
+    // 0xC1 0x33 0xF1 0x81 0x66
+
+    // 0 -> 200ms, 1 -> 400ms, 0 -> 400ms, 1 -> 400ms, 0 -> 400ms, 1 -> 227ms
+    wakeup_slow();
+    // set tx to low and wait for ecu transmission
+    gpio_put(PIO_TX_PIN, 0);
+
+    init_pio_tx();
+
+    uint32_t first_read = uart_rx_program_getc(pio0, 0);
+    printf("First %x\n", first_read);
+
+    if(first_read == 0xf7) return first_read;
+
+    uart_tx_program_putc(pio_tx, sm_tx, 0x01);
+
+    uint32_t second_read = uart_rx_program_getc(pio0, 0);
+    printf("Second %x\n", second_read);
+
+    uint32_t third_read = uart_rx_program_getc(pio0, 0);
+    printf("Third %x\n", third_read);
+
+    uint32_t fourth_read = uart_rx_program_getc(pio0, 0);
+    printf("fourth %x\n", fourth_read);
+
+    if(fourth_read == 0x8f) {        
+        uint32_t complement = 0xff - fourth_read;
+
+        uart_tx_program_putc(pio_tx, sm_tx, complement);
+
     }
-}
 
-void init_irq_rx() {
-    // Set UART flow control CTS/RTS, we don't want these, so turn them off
-    uart_set_hw_flow(HARD_UART_INST, false, false);
-
-    // Set our data format
-    uart_set_format(HARD_UART_INST, DATA_BITS, STOP_BITS, PARITY);
-
-    // Turn off FIFO's - we want to do this character by character
-    uart_set_fifo_enabled(HARD_UART_INST, false);
-
-    // Set up a RX interrupt
-    // We need to set up the handler first
-    // Select correct interrupt for the UART we are using
-    int UART_IRQ = HARD_UART_INST == uart0 ? UART0_IRQ : UART1_IRQ;
-
-    // And set up and enable the interrupt handlers
-    irq_set_exclusive_handler(UART_IRQ, on_uart_rx);
-    irq_set_enabled(UART_IRQ, true);
-
-    // Now enable the UART to send interrupts - RX only
-    uart_set_irq_enables(HARD_UART_INST, true, false);
-}
-
-// Ask core 1 to print a string, to make things easier on core 0
-void core1_main() {
-    const char *s = (const char *) multicore_fifo_pop_blocking();
-
-    uart_puts(HARD_UART_INST, s);
+    return fourth_read;
 }
 
 int main() {
     stdio_init_all();
-
     setup_default_uart();
 
-    uart_init(HARD_UART_INST, SERIAL_BAUD);
-    gpio_set_function(HARD_UART_TX_PIN, GPIO_FUNC_UART);
-    gpio_set_function(HARD_UART_RX_PIN, GPIO_FUNC_UART);
-
     init_pio_rx();
-    init_irq_rx();
-    init_pio_tx();
 
-    // Tell core 1 to print some text to uart1 as fast as it can
-    multicore_launch_core1(core1_main);
+    gpio_init(PIO_TX_PIN);
+    gpio_set_dir(PIO_TX_PIN, GPIO_OUT);
 
-    delay_start();
+    while (init_comm_protocol() != 0xef) {
+        printf("Failed to init, waiting to try again\n");
+    }
 
-    const char *kek = "KEK\n";
-    uart_tx_program_puts(pio_tx, sm_tx, kek);
+    printf("Comms initialization success!\n");
 
-    multicore_fifo_push_blocking((uint32_t) text);
-
-    // Echo characters received from PIO to the console
     while (true) {
-        char c = uart_rx_program_getc(pio0, 0);
-        putchar(c);
+        uint32_t c = uart_rx_program_getc(pio0, 0);
+        printf("%x\n", c);
     }
 }
