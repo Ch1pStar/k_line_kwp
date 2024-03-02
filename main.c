@@ -18,8 +18,11 @@
 // #define SERIAL_BAUD PICO_DEFAULT_UART_BAUD_RATE
 #define SERIAL_BAUD 10400 // as per KWP2000
 
-#define PIO_RX_PIN 3
-#define PIO_TX_PIN 2
+// #define PIO_RX_PIN 3
+// #define PIO_TX_PIN 2
+
+#define PIO_RX_PIN 18
+#define PIO_TX_PIN 15
 
 PIO pio_tx = pio1;
 uint sm_tx = 1;
@@ -136,6 +139,7 @@ uint32_t init_comm_protocol() {
 
 #define MAX_DATA_SIZE 255
 #define MAX_RESPONSE_SIZE 80
+#define MAX_DTC_COUNT 255
 
 typedef struct {
     uint8_t serviceId;
@@ -150,7 +154,6 @@ typedef struct {
     uint8_t checksum;
 } KWP2000Packet;
 
-
 typedef struct {
     uint8_t data[MAX_RESPONSE_SIZE];
     size_t dataSize;
@@ -163,6 +166,12 @@ typedef enum {
     RESPONSE_OVERFLOW // When received data exceeds MAX_RESPONSE_SIZE
 } ResponseStatus;
 
+
+typedef struct {
+    uint8_t highByte;
+    uint8_t lowByte;
+    uint8_t status;
+} DTCData;
 
 uint8_t calculate_checksum(const KWP2000Service* service) {
     uint8_t csum = 0;
@@ -193,6 +202,8 @@ ResponseStatus read_response(size_t commandLength, KWP2000Response* response) {
     if (responseStatus == 0x7f) {
         printf("Error in response\n");
         return RESPONSE_ERROR;
+    }else{
+        printf("Response status: %02x\n", responseStatus);
     }
 
     // Read the data bytes
@@ -251,7 +262,47 @@ void print_str_response(const KWP2000Response* response) {
     printf("\"\n");
 }
 
-void build_packet(const KWP2000Service* service) {
+uint8_t parse_dtcs_response(const KWP2000Response* response, DTCData* dtcArray, size_t dtcArraySize) {
+    const uint8_t num_dtcs = response->data[0];
+
+    printf("%d Faults Found:\n", num_dtcs);
+
+    for (size_t i = 0; i < num_dtcs; ++i) {
+        size_t offset = 1 + i * 3; // Calculate the offset for each DTC (skip the count byte)
+        dtcArray[i].highByte = response->data[offset];
+        dtcArray[i].lowByte = response->data[offset + 1];
+        dtcArray[i].status = response->data[offset + 2];
+    }
+
+    return num_dtcs;
+}
+
+
+// Helper function to convert DTC bytes into a human-readable DTC code
+void convertDtcToReadableFormat(uint8_t highByte, uint8_t lowByte, char *dtcString) {
+    // Assuming the DTC format is ISO 14229-1
+    uint8_t firstLetterIndex = (highByte >> 6) & 0x03; // First 2 bits
+    char firstLetter = 'P'; // Default to powertrain
+    switch (firstLetterIndex) {
+        case 0: firstLetter = 'P'; break; // Powertrain
+        case 1: firstLetter = 'C'; break; // Chassis
+        case 2: firstLetter = 'B'; break; // Body
+        case 3: firstLetter = 'U'; break; // Network
+    }
+
+    sprintf(dtcString, "%c%02X%02X", firstLetter, highByte & 0x3F, lowByte);
+}
+
+// Function to print DTCs in a human-readable format
+void printDtcData(DTCData *dtcs, size_t numDtc) {
+    for (size_t i = 0; i < numDtc; ++i) {
+        char dtcString[6]; // DTC string format: C1234
+        convertDtcToReadableFormat(dtcs[i].highByte, dtcs[i].lowByte, dtcString);
+        printf("DTC %zu: %s, Status: 0x%02X\n", i + 1, dtcString, dtcs[i].status);
+    }
+}
+
+uint32_t build_packet(const KWP2000Service* service) {
     KWP2000Packet packet;
 
     packet.length = 1 + service->dataLength; // Only service ID + data bytes, without checksum
@@ -270,13 +321,40 @@ void build_packet(const KWP2000Service* service) {
 
     send_packet(&packet);
 
-    KWP2000Response response;
-
-    read_response(packet.length+2, &response);
-    print_response(&response);
-    print_str_response(&response);
+    return packet.length+2;
 }
 
+void clear_dtcs() {
+    KWP2000Service  clear_dtcs_service = {0x14, {0xff, 0x00}, 2};
+    KWP2000Response clear_dtcs_response;
+
+    size_t packet_len = build_packet(&clear_dtcs_service);
+    read_response(packet_len, &clear_dtcs_response);
+}
+
+void read_dtcs() {
+    KWP2000Service  read_dtcs_service = {0x18, {0x00, 0xff, 0x00}, 3};
+    KWP2000Response dtcs_response;
+    size_t packet_len = build_packet(&read_dtcs_service);
+    read_response(packet_len, &dtcs_response);
+
+    print_response(&dtcs_response);
+    print_str_response(&dtcs_response);
+
+    DTCData dtcArray[MAX_DTC_COUNT];
+    size_t numDTCs = parse_dtcs_response(&dtcs_response, dtcArray, MAX_DTC_COUNT);
+
+    printDtcData(dtcArray, numDTCs);
+}
+
+void read_ecu_id() {
+    KWP2000Service ecu_id_service = {0x1A, {0x9B}, 1}; // ECU ID
+    KWP2000Response ecu_id_response;
+    size_t packet_len = build_packet(&ecu_id_service);
+
+    read_response(packet_len, &ecu_id_response);
+    print_response(&ecu_id_response);
+}
 
 int main() {
     stdio_init_all();
@@ -292,9 +370,10 @@ int main() {
     }
     printf("Comms initialization success!\n");
 
-    KWP2000Service ecu_id_service = {0x1A, {0x9B}, 1}; // ECU ID
-    build_packet(&ecu_id_service);
-    printf("------------------------\n");
+    read_ecu_id();
+    // clear_dtcs();
+    sleep_ms(500);
+    read_dtcs();
 
     // KWP2000Service init_diag_service = {0x10, {0x86, 0x64}, 2}; // Init diag session
     // build_packet(&init_diag_service);
