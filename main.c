@@ -267,7 +267,7 @@ uint8_t parse_dtcs_response(const KWP2000Response* response, DTCData* dtcArray, 
 
     printf("%d Faults Found:\n", num_dtcs);
 
-    for (size_t i = 0; i < num_dtcs; ++i) {
+    for (size_t i = 0; i < num_dtcs; i++) {
         size_t offset = 1 + i * 3; // Calculate the offset for each DTC (skip the count byte)
         dtcArray[i].highByte = response->data[offset];
         dtcArray[i].lowByte = response->data[offset + 1];
@@ -277,6 +277,42 @@ uint8_t parse_dtcs_response(const KWP2000Response* response, DTCData* dtcArray, 
     return num_dtcs;
 }
 
+void printDTCStatus(uint8_t status) {
+    printf("\tStatus: ");
+    switch (status & 0x0F) { // Masking with 0x0F to get the lower 4 bits
+        case 0x00:
+            printf("No fault symptom available");
+            break;
+        case 0x01:
+            printf("Above maximum threshold");
+            break;
+        case 0x02:
+            printf("Below minimum threshold");
+            break;
+        case 0x04:
+            printf("No signal");
+            break;
+        case 0x08:
+            printf("Invalid signal");
+            break;
+        default:
+            printf("Unknown");
+    }
+
+    printf(", Test %s", (status & 0x10) ? "not complete" : "complete or not applicable");
+
+    if ((status & 0x60) == 0x00) {
+        printf(", No DTC detected or stored");
+    } else if ((status & 0x60) == 0x20) {
+        printf(", DTC not present at time of request but stored");
+    } else if ((status & 0x60) == 0x40) {
+        printf(", DTC maturing - intermittent, insufficient data for storage");
+    } else if ((status & 0x60) == 0x60) {
+        printf(", DTC present at time of request and stored");
+    }
+
+    printf(", Warning Lamp %s\n", (status & 0x80) ? "enabled" : "disabled");
+}
 
 // Helper function to convert DTC bytes into a human-readable DTC code
 void convertDtcToReadableFormat(uint8_t highByte, uint8_t lowByte, char *dtcString) {
@@ -299,6 +335,7 @@ void printDtcData(DTCData *dtcs, size_t numDtc) {
         char dtcString[6]; // DTC string format: C1234
         convertDtcToReadableFormat(dtcs[i].highByte, dtcs[i].lowByte, dtcString);
         printf("DTC %zu: %s, Status: 0x%02X\n", i + 1, dtcString, dtcs[i].status);
+        printDTCStatus(dtcs[i].status);
     }
 }
 
