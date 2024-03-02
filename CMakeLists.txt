@@ -15,7 +15,7 @@ pico_sdk_init()
 
 if (TARGET tinyusb_device)
 
-    add_executable(k_line_kwp main.c)
+    add_executable(k_line_kwp kline.c kwp2000.c main.c)
 
     pico_generate_pio_header(k_line_kwp ${CMAKE_CURRENT_LIST_DIR}/uart_rx.pio)
 
