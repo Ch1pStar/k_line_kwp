@@ -62,6 +62,11 @@ typedef struct {
 } DTCData;
 
 void read_ecu_id();
+void start_diag_session();
+void ecu_id_manual();
 void read_dtcs();
 ResponseStatus read_response(size_t commandLength, KWP2000Response* response);
 size_t build_packet(const KWP2000Service* service);
+uint8_t kwp_checksum(const uint8_t *data, int length, uint8_t format_byte);
+
+void print_str_response(const KWP2000Response* response);

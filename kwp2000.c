@@ -16,7 +16,8 @@ ResponseStatus read_response(size_t commandLength, KWP2000Response* response) {
 
     // Skip echoed command bytes
     for (size_t i = 0; i < commandLength; ++i) {
-        read_byte();
+        char ch = read_byte();
+        // printf("Skipping echoed command byte: %02x\n", ch);
     }
 
     uint8_t checksum = 0;
@@ -30,7 +31,7 @@ ResponseStatus read_response(size_t commandLength, KWP2000Response* response) {
         printf("Error in response\n");
         return RESPONSE_ERROR;
     }else{
-        printf("Response status: %02x\n", responseStatus);
+        printf("Response status: %02x, length: %02x\n", responseStatus, responseLength);
     }
 
     // Read the data bytes
@@ -59,6 +60,12 @@ ResponseStatus read_response(size_t commandLength, KWP2000Response* response) {
 }
 
 void send_packet(const KWP2000Packet* packet) {
+    // printf("Sending packet: %x %x", packet->length, packet->serviceId);
+    // for (size_t i = 0; i < packet->length - 1; ++i) {
+    //     printf(" %x", packet->dataBytes[i]);
+    // }
+    // printf(" %x\n", packet->checksum);
+
     send_byte(packet->length);
     send_byte(packet->serviceId);
 
@@ -217,5 +224,90 @@ void read_ecu_id() {
     size_t packet_len = build_packet(&ecu_id_service);
 
     read_response(packet_len, &ecu_id_response);
-    print_response(&ecu_id_response);
+    print_str_response(&ecu_id_response);
+}
+
+uint8_t kwp_checksum(const uint8_t *data, int length, uint8_t format_byte) {
+    uint16_t sum = format_byte;
+
+    // Skip the format byte (data[0])
+    for (int i = 0; i < length; i++) {
+        sum += data[i];
+    }
+
+    return (uint8_t)sum;  // Return lowest 8 bits
+}
+
+uint8_t kwp_format_byte(int length, int use_addressing, int use_extended_format) {
+    uint8_t format = 0;
+
+    if (use_extended_format) {
+        format |= 0x40;  // Bit 6: length format
+        format |= 0x20;  // Bit 5: use checksum
+    }
+
+    if (use_addressing) {
+        format |= 0x10;  // Bit 4: addressing
+    }
+
+    format |= (length & 0x0F);  // Lower 4 bits = number of bytes after format
+
+    return format;
+}
+
+void start_diag_session() {
+    // 68 6A F1 01 02 C6  // Start extended session
+    // 68 6A F1 01 00 C4  // Start default session
+
+    uint8_t command[] = { 0x6A, 0xF1, 0x01, 0x00 };  // Format + payload
+    int len = (sizeof(command) / sizeof(command[0]));
+
+    uint8_t format_byte = kwp_format_byte(len+4, 0, 1);
+    uint8_t checksum = kwp_checksum(command, len, format_byte);
+
+    printf("Send command: ");
+    send_byte(format_byte);
+    printf("%02x ", format_byte);
+
+    for(int i = 0; i < len; i++) {
+        printf("%02x ", command[i]);
+        send_byte(command[i]);
+    }
+    printf("%02x\n", checksum);
+    send_byte(checksum);
+
+    for(int i = 0; i < 6; i++) {
+        printf("Read echo byte%d: %02x\n", i+1, read_byte());
+    }
+
+    for(int i = 0; i < 10; i++) {
+        printf("Read byte%d: %02x\n", i+1, read_byte());
+    }
+
+    printf("Start diag session complete\n");
+}
+
+
+void ecu_id_manual() {
+    // 85 10 6B 1A 90 96
+    const uint8_t command[] = { 0x85, 0x10, 0x6B, 0x1A, 0x90};
+    int len = sizeof(command) / sizeof(command[0]);
+    uint8_t checksum = kwp_checksum(command, len, 0x85);
+
+    printf("Send command: ");
+    for(int i = 0; i < len; i++) {
+        printf("%02x ", command[i]);
+        send_byte(command[i]);
+    }
+    printf("%02x\n", checksum);
+    send_byte(checksum);
+
+    for(int i = 0; i < 6; i++) {
+        printf("Read echo byte%d: %02x\n", i+1, read_byte());
+    }
+
+    for(int i = 0; i < 100; i++) {
+        printf("Read byte%d: %02x\n", i+1, read_byte());
+    }
+
 }

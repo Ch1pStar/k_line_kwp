@@ -1,3 +1,5 @@
+#include <pico/time.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <ctype.h>
 
@@ -40,69 +42,133 @@ void send_byte(uint32_t byte) {
     // printf("Sent: %x\n", byte);
 }
 
-void wakeup_slow() {
-    printf("Begin slow initializaion\n");
-    // break on - 0
-    // break off - 1
+void wakeup_boot_mode() {
+    // Initializing with 0x88, lsb first, this is boot mode for the ECU
+    // the confirmation byte is 0xcc
+    printf("Begin boot mode wakeup - sending 0x88 over 5 baud\n");
 
+    // put line low, start bit
+    gpio_put(PIO_TX_PIN, 0);
+    sleep_ms(200);
+
+    //  1000 1000, lsb first
+    gpio_put(PIO_TX_PIN, 1);
+    sleep_ms(200);
+    gpio_put(PIO_TX_PIN, 0);
+    sleep_ms(200);
+    gpio_put(PIO_TX_PIN, 0);
+    sleep_ms(200);
     gpio_put(PIO_TX_PIN, 0);
     sleep_ms(200);
 
     gpio_put(PIO_TX_PIN, 1);
     sleep_ms(200);
-
     gpio_put(PIO_TX_PIN, 0);
-    sleep_ms(600);
-
-    gpio_put(PIO_TX_PIN, 1);
+    sleep_ms(200);
+    gpio_put(PIO_TX_PIN, 0);
+    sleep_ms(200);
+    gpio_put(PIO_TX_PIN, 0);
     sleep_ms(200);
 
-    gpio_put(PIO_TX_PIN, 0);
-    sleep_ms(600);
-
+    // pull line high, stop bit
     gpio_put(PIO_TX_PIN, 1);
-    sleep_ms(227);
+    sleep_ms(200);
 }
 
-void empty_reads() {
-    while(read_byte() != 0xef) {
+void wakeup_kwp2000() {
+    // This is KWP2000 or VAG flavor of KWP2000
+    printf("Begin KWP2000 wakeup - sending 0x33 over 5 baud\n");
+
+    // put line low, start bit
+    gpio_put(PIO_TX_PIN, 0);
+    sleep_ms(200);
+
+    //  1100 1100, 0x88, lsb first
+    gpio_put(PIO_TX_PIN, 1);
+    sleep_ms(400);
+
+    gpio_put(PIO_TX_PIN, 0);
+    sleep_ms(400);
+
+    gpio_put(PIO_TX_PIN, 1);
+    sleep_ms(400);
+
+    gpio_put(PIO_TX_PIN, 0);
+    sleep_ms(400);
+
+    // pull line high, stop bit
+    gpio_put(PIO_TX_PIN, 1);
+    sleep_ms(200);
+}
+
+void wakeup_slow() {
+    printf("Waiting 3 seconds before slow wakeup\n");
+    sleep_ms(3000);
+
+    printf("Begin 5 baud initializaion\n");
+    // line idle is high
+
+    // with 5 baud, 1 bit time is 200ms
+    // so we sleep 200ms between each bit
+    wakeup_boot_mode();
+}
+
+void delay_start() {
+    int ch;
+
+    printf("Press 's' to start\n");
+    while ((ch = getchar()) != 's') {
+        printf("ch: %c\n", ch);
         continue;
     }
+
+    // for(short i=0;i<4;i++) {
+    //     printf("Starting in %d\n", 4-i);
+    //     sleep_ms(1000);
+    // }
+
 }
 
 uint32_t init_comm_protocol() {
     // initial state, line is high
     gpio_put(PIO_TX_PIN, 1);
+
+    // delay_start();
     wakeup_slow();
-    // set tx to low and wait for ecu transmission
-    gpio_put(PIO_TX_PIN, 0);
 
     init_pio_tx();
 
-    empty_reads();
+    // 0x55
+    uint32_t sync_byte = read_byte();
+    printf("Sync byte: %x\n", sync_byte);
 
-    // this should be 0x8F
-    uint32_t confirmationByte = read_byte();
+    // prob not needed
+    sleep_ms(5);
 
-    // this should be 0x70
-    // this is the ECU address, idk what its used for
-    uint32_t complement = 0xff - confirmationByte;
+    // 0xef in boot mode, 0x08 in KWP2000
+    uint32_t key_byte1 = read_byte();
+    printf("Key byte 1: %x\n", key_byte1);
 
-    printf("Sending complement %x, to %x\n", complement, confirmationByte);
+    // 0x8f in boot mode, 0x08 in KWP2000
+    uint32_t key_byte2 = read_byte();
+    printf("Key byte 2: %x\n", key_byte2);
+
     sleep_ms(50);
+
+    uint32_t complement = 0xff - key_byte2;
+    printf("Complement: %x\n", complement);
     send_byte(complement);
 
     uint32_t complement_readback = read_byte();
+    printf("Complement readback: %x\n", complement_readback);
 
     if(complement_readback != complement) {
         printf("Got %x response to complement, something went wrong\n", complement_readback);
     }
 
-    uint32_t ecu_address = read_byte();
+    // 0xee in boot mode, 0xcc in KWP2000
+    uint32_t readAddress = read_byte(); 
+    printf("Read address: %x\n", readAddress);
 
-    if(ecu_address != 0xee) {
-        printf("Got %x ECU address, expecting 0xEE\n", ecu_address);
-    }
-
-    return ecu_address;
+    return readAddress;
 }

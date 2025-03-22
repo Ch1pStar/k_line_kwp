@@ -68,23 +68,25 @@ void handle_ecu_communication() {
     uint32_t current_time = to_ms_since_boot(get_absolute_time());
 
     // Send periodic heartbeat to ECU (read ECU ID)
-    if (current_time - last_heartbeat >= 2000) {
-        KWP2000Service ecu_id_service = {0x1A, {0x9B}, 1};
-        KWP2000Response response;
+    // if (current_time - last_heartbeat >= 2000) {
+    //     KWP2000Service ecu_id_service = {0x1A, {0x9B}, 1};
+    //     KWP2000Response response;
         
-        size_t packet_len = build_packet(&ecu_id_service);
-        ResponseStatus status = read_response(packet_len, &response);
+    //     size_t packet_len = build_packet(&ecu_id_service);
+    //     ResponseStatus status = read_response(packet_len, &response);
         
-        if (status == RESPONSE_OK) {
-            g_state_machine.lastEcuHeartbeat = current_time;
-            last_heartbeat = current_time;
+    //     if (status == RESPONSE_OK) {
+    //         g_state_machine.lastEcuHeartbeat = current_time;
+    //         last_heartbeat = current_time;
             
-            // Forward the data to RPI5 if it's connected
-            if (g_state_machine.rpi5Connected) {
-                handleEcuData(&response);
-            }
-        }
-    }
+    //         // Forward the data to RPI5 if it's connected
+    //         if (g_state_machine.rpi5Connected) {
+    //             handleEcuData(&response);
+    //         }else{
+    //             print_str_response(&response);
+    //         }
+    //     }
+    // }
 }
 
 void handle_rpi5_communication() {
