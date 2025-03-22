@@ -1,3 +1,17 @@
+# == DO NOT EDIT THE FOLLOWING LINES for the Raspberry Pi Pico VS Code Extension to work ==
+if(WIN32)
+    set(USERHOME $ENV{USERPROFILE})
+else()
+    set(USERHOME $ENV{HOME})
+endif()
+set(sdkVersion 2.1.1)
+set(toolchainVersion 14_2_Rel1)
+set(picotoolVersion 2.1.1)
+set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
+if (EXISTS ${picoVscode})
+    include(${picoVscode})
+endif()
+# ====================================================================================
 cmake_minimum_required(VERSION 3.12)
 
 # Pull in PICO SDK (must be before project)
@@ -15,7 +29,7 @@ pico_sdk_init()
 
 if (TARGET tinyusb_device)
 
-    add_executable(k_line_kwp kline.c kwp2000.c main.c)
+    add_executable(k_line_kwp kline.c kwp2000.c state_machine.c main.c)
 
     pico_generate_pio_header(k_line_kwp ${CMAKE_CURRENT_LIST_DIR}/uart_rx.pio)
 

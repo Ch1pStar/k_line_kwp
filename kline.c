@@ -70,25 +70,9 @@ void empty_reads() {
     }
 }
 
-void delay_start() {
-    int ch;
-
-    while ((ch = getchar()) != 's') {
-        continue;
-    }
-
-    // for(short i=0;i<4;i++) {
-    //     printf("Starting in %d\n", 4-i);
-    //     sleep_ms(1000);
-    // }
-
-}
-
 uint32_t init_comm_protocol() {
     // initial state, line is high
     gpio_put(PIO_TX_PIN, 1);
-    delay_start();
-
     wakeup_slow();
     // set tx to low and wait for ecu transmission
     gpio_put(PIO_TX_PIN, 0);

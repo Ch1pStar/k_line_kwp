@@ -166,7 +166,7 @@ void print_dtc_data(DTCData *dtcs, size_t numDtc) {
     }
 }
 
-uint32_t build_packet(const KWP2000Service* service) {
+size_t build_packet(const KWP2000Service* service) {
     KWP2000Packet packet;
 
     packet.length = 1 + service->dataLength; // Only service ID + data bytes, without checksum
@@ -185,7 +185,7 @@ uint32_t build_packet(const KWP2000Service* service) {
 
     send_packet(&packet);
 
-    return packet.length+2;
+    return (size_t)packet.length+2;
 }
 
 void clear_dtcs() {
