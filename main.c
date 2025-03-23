@@ -123,6 +123,7 @@ void handle_rpi5_communication() {
                         g_state_machine.ecuConnected = true;
                         g_state_machine.lastEcuHeartbeat = to_ms_since_boot(get_absolute_time());
                         printf("ECU connected successfully!\n");
+                        printf("ecuConnected: %d\n", g_state_machine.ecuConnected);
                         g_state_machine.currentState = STATE_FULLY_OPERATIONAL;
                         
                         SerialFrame ack = {
@@ -143,6 +144,7 @@ void handle_rpi5_communication() {
                 break;
                 
             case MSG_COMMAND:
+                printf("ecuConnected: %d\n", g_state_machine.ecuConnected);
                 if (g_state_machine.ecuConnected) {
                     handleRpi5Command(&frame);
                 } else {

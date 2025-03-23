@@ -42,10 +42,11 @@ void send_byte(uint32_t byte) {
     // printf("Sent: %x\n", byte);
 }
 
-void wakeup_boot_mode() {
-    // Initializing with 0x88, lsb first, this is boot mode for the ECU
+void wakeup_programming_mode() {
+    // Initializing with 0x88, lsb first, this is a special programming mode for the ECU
+    // most likely a variant of KWP2000 specific for Bosch ME7.5 or similar ECUs
     // the confirmation byte is 0xcc
-    printf("Begin boot mode wakeup - sending 0x88 over 5 baud\n");
+    printf("Begin programming mode wakeup - sending 0x88 over 5 baud\n");
 
     // put line low, start bit
     gpio_put(PIO_TX_PIN, 0);
@@ -77,7 +78,7 @@ void wakeup_boot_mode() {
 
 void wakeup_kwp2000() {
     // This is KWP2000 or VAG flavor of KWP2000
-    printf("Begin KWP2000 wakeup - sending 0x33 over 5 baud\n");
+    printf("Begin KWP2000 wakeup - sending 0x33 at 5 baud\n");
 
     // put line low, start bit
     gpio_put(PIO_TX_PIN, 0);
@@ -102,15 +103,17 @@ void wakeup_kwp2000() {
 }
 
 void wakeup_slow() {
-    printf("Waiting 3 seconds before slow wakeup\n");
-    sleep_ms(3000);
+    // initial state, line is high
+    gpio_put(PIO_TX_PIN, 1);
+    // per kawp2000 spec, wait 300ms while the line is idle(high)
+    uint16_t w5 = 300;
+    sleep_ms(w5);
 
-    printf("Begin 5 baud initializaion\n");
-    // line idle is high
+    printf("Begin 5 baud initializaion address transmission\n");
 
     // with 5 baud, 1 bit time is 200ms
     // so we sleep 200ms between each bit
-    wakeup_boot_mode();
+    wakeup_programming_mode();
 }
 
 void delay_start() {
@@ -130,35 +133,44 @@ void delay_start() {
 }
 
 uint32_t init_comm_protocol() {
-    // initial state, line is high
-    gpio_put(PIO_TX_PIN, 1);
 
     // delay_start();
     wakeup_slow();
 
     init_pio_tx();
 
+    uint8_t w1 = 60;
+
+    // per kwp2000 spec, sync byte should be sent between 60 and 300ms after wakeup
+    sleep_ms(w1);
+
     // 0x55
     uint32_t sync_byte = read_byte();
     printf("Sync byte: %x\n", sync_byte);
 
-    // prob not needed
-    sleep_ms(5);
+    uint8_t w2 = 5;
+    // key byte 1 should be sent by the ECU between 5 and 20ms after sync byte
+    // key byte 2 should be sent instantly after key byte 1
+    sleep_ms(w2);
 
-    // 0xef in boot mode, 0x08 in KWP2000
+    // key bytes
+    // - 0xef 0x8f in programming mode
+    // - 0x08 0x08 in KWP2000
     uint32_t key_byte1 = read_byte();
     printf("Key byte 1: %x\n", key_byte1);
-
-    // 0x8f in boot mode, 0x08 in KWP2000
     uint32_t key_byte2 = read_byte();
     printf("Key byte 2: %x\n", key_byte2);
 
-    sleep_ms(50);
+    uint8_t w4 = 25;
+    // per kwp2000 spec, complement byte response window is 25-50ms after key byte 2
+    // but it doesn't seem to be very strict
+    sleep_ms(w4);
 
     uint32_t complement = 0xff - key_byte2;
     printf("Complement: %x\n", complement);
     send_byte(complement);
 
+    // complement readback is instantly after complement byte
     uint32_t complement_readback = read_byte();
     printf("Complement readback: %x\n", complement_readback);
 
