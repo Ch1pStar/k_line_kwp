@@ -19,6 +19,7 @@
 // #define PIO_TX_PIN 2
 
 uint32_t read_byte();
+uint32_t read_byte_timeout(uint32_t timeout_us);
 void send_byte(uint32_t byte);
 void init_pio_rx();
 void init_pio_tx();
@@ -61,11 +62,18 @@ typedef struct {
     uint8_t status;
 } DTCData;
 
+// Original function signatures remain unchanged
 ResponseStatus read_response(size_t commandLength, KWP2000Response* response);
+ResponseStatus read_response_silent(size_t commandLength, KWP2000Response* response);
+ResponseStatus _do_read_response(size_t commandLength, KWP2000Response* response, bool silent);
+
+size_t build_packet(const KWP2000Service* service);
+size_t build_packet_silent(const KWP2000Service* service);
+size_t _do_build_packet(const KWP2000Service* service, bool silent);
+
 void print_response(const KWP2000Response* response);
 void print_str_response(const KWP2000Response* response);
-size_t build_packet(const KWP2000Service* service);
 
-void read_ecu_id();
-void read_dtcs();
-void clear_dtcs();
+void read_ecu_id(void);
+void read_dtcs(void);
+void clear_dtcs(void);

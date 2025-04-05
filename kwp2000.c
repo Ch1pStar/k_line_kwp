@@ -1,4 +1,5 @@
 #include "config.h"
+#include <stddef.h>
 
 uint8_t calculate_checksum(const KWP2000Service* service) {
     uint8_t csum = 0;
@@ -11,52 +12,108 @@ uint8_t calculate_checksum(const KWP2000Service* service) {
     return csum;
 }
 
-ResponseStatus read_response(size_t commandLength, KWP2000Response* response) {
+ResponseStatus _do_read_response(size_t commandLength, KWP2000Response* response, bool silent) {
     response->dataSize = 0;
 
     // Skip echoed command bytes
     for (size_t i = 0; i < commandLength; ++i) {
-        char ch = read_byte();
-        // printf("Skipping echoed command byte: %02x\n", ch);
+        uint32_t byte = read_byte_timeout(100000);  // 100ms timeout
+        if (byte == UINT32_MAX) {
+            if (!silent) {
+                printf("Timeout while reading echo bytes\n");
+            }
+            return RESPONSE_ERROR;
+        }
     }
 
-    uint8_t checksum = 0;
-    uint8_t responseLength = read_byte();
-    checksum += responseLength;
+    // Read response length
+    uint32_t respLen = read_byte_timeout(100000);
+    if (respLen == UINT32_MAX) {
+        if (!silent) {
+            printf("Timeout while reading response length\n");
+        }
+        return RESPONSE_ERROR;
+    }
+    uint8_t responseLength = (uint8_t)respLen;
+    uint8_t checksum = responseLength;
 
-    uint8_t responseStatus = read_byte();
+    // Read response status
+    uint32_t respStatus = read_byte_timeout(100000);
+    if (respStatus == UINT32_MAX) {
+        if (!silent) {
+            printf("Timeout while reading response status\n");
+        }
+        return RESPONSE_ERROR;
+    }
+    uint8_t responseStatus = (uint8_t)respStatus;
     checksum += responseStatus;
 
     if (responseStatus == 0x7f) {
-        printf("Error in response\n");
+        if (!silent) {
+            printf("Error in response\n");
+        }
         return RESPONSE_ERROR;
-    }else{
-        printf("Response status: %02x, length: %02x\n", responseStatus, responseLength);
+    } else {
+        if (!silent) {
+            printf("Response status: %02x, length: %02x\n", responseStatus, responseLength);
+        }
     }
 
     // Read the data bytes
     for (size_t i = 0; i < responseLength - 1; ++i) {
         if (i < MAX_RESPONSE_SIZE) {
-            uint8_t dataByte = read_byte();
-            checksum += dataByte;
-            response->data[i] = dataByte;
+            uint32_t dataByte = read_byte_timeout(100000);
+            if (dataByte == UINT32_MAX) {
+                if (!silent) {
+                    printf("Timeout while reading data byte %zu\n", i);
+                }
+                return RESPONSE_ERROR;
+            }
+            checksum += (uint8_t)dataByte;
+            response->data[i] = (uint8_t)dataByte;
             response->dataSize++;
         } else {
             // Exceeds buffer, read remaining to maintain protocol but do not store
-            read_byte();
+            uint32_t dataByte = read_byte_timeout(100000);
+            if (dataByte == UINT32_MAX) {
+                if (!silent) {
+                    printf("Timeout while reading overflow byte\n");
+                }
+                return RESPONSE_ERROR;
+            }
             return RESPONSE_OVERFLOW;
         }
     }
 
-    //read and validate the checksum byte
-    uint8_t receivedChecksum = read_byte();
-    if (checksum == receivedChecksum) {
-        printf("Response checksum valid.\n");
+    // Read and validate the checksum byte
+    uint32_t recvChecksum = read_byte_timeout(100000);
+    if (recvChecksum == UINT32_MAX) {
+        if (!silent) {
+            printf("Timeout while reading checksum\n");
+        }
+        return RESPONSE_ERROR;
+    }
+
+    if (checksum == (uint8_t)recvChecksum) {
+        if (!silent) {
+            printf("Response checksum valid.\n");
+        }
         return RESPONSE_OK;
     } else {
-        printf("Response checksum invalid. Calculated: %02x, Received: %02x\n", checksum, receivedChecksum);
+        if (!silent) {
+            printf("Response checksum invalid. Calculated: %02x, Received: %02x\n", 
+               checksum, (uint8_t)recvChecksum);
+        }
         return RESPONSE_CHECKSUM_INVALID;
     }
+}
+
+ResponseStatus read_response(size_t commandLength, KWP2000Response* response) {
+    return _do_read_response(commandLength, response, false);
+}
+
+ResponseStatus read_response_silent(size_t commandLength, KWP2000Response* response) {
+    return _do_read_response(commandLength, response, true);
 }
 
 void send_packet(const KWP2000Packet* packet) {
@@ -173,7 +230,7 @@ void print_dtc_data(DTCData *dtcs, size_t numDtc) {
     }
 }
 
-size_t build_packet(const KWP2000Service* service) {
+size_t _do_build_packet(const KWP2000Service* service, bool silent) {
     KWP2000Packet packet;
 
     packet.length = 1 + service->dataLength; // Only service ID + data bytes, without checksum
@@ -183,16 +240,26 @@ size_t build_packet(const KWP2000Service* service) {
     }
     packet.checksum = calculate_checksum(service);
 
-    // Display the packet
-    printf("KWP2000 Packet: Length=0x%02X, Service ID=0x%02X, Data=", packet.length, packet.serviceId);
-    for (size_t i = 0; i < service->dataLength; ++i) {
-        printf("0x%02X ", packet.dataBytes[i]);
+    if (!silent) {
+        // Display the packet
+        printf("KWP2000 Packet: Length=0x%02X, Service ID=0x%02X, Data=", packet.length, packet.serviceId);
+        for (size_t i = 0; i < service->dataLength; ++i) {
+            printf("0x%02X ", packet.dataBytes[i]);
+        }
+        printf("Checksum=0x%02X\n", packet.checksum);
     }
-    printf("Checksum=0x%02X\n", packet.checksum);
 
     send_packet(&packet);
 
     return (size_t)packet.length+2;
+}
+
+size_t build_packet(const KWP2000Service* service) {
+    return _do_build_packet(service, false);
+}
+
+size_t build_packet_silent(const KWP2000Service* service) {
+    return _do_build_packet(service, true);
 }
 
 void clear_dtcs() {

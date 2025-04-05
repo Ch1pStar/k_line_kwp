@@ -30,11 +30,31 @@ void init_pio_rx() {
     uart_rx_program_init(pio, sm, offset, PIO_RX_PIN, SERIAL_BAUD);
 }
 
-uint32_t read_byte() {
+uint32_t read_byte_timeout(uint32_t timeout_us) {
+    absolute_time_t timeout_time = make_timeout_time_us(timeout_us);
+    
+    // Wait for data to be available, but with timeout
+    while (pio_sm_is_rx_fifo_empty(pio0, 0)) {
+        if (time_reached(timeout_time)) {
+            return UINT32_MAX;  // Use max value as timeout indicator
+        }
+        tight_loop_contents();  // Prevent optimizing out the loop
+    }
+    
+    // Data is available, read it
     uint32_t c = uart_rx_program_getc(pio0, 0);
-    // printf("Read: %x\n", c);
-
     return c;
+}
+
+uint32_t read_byte() {
+    uint32_t byte = read_byte_timeout(500000);  // 500ms timeout
+    if (byte == UINT32_MAX) {
+        // Handle timeout
+        return UINT32_MAX;
+    } else {
+        // Process valid byte
+        return byte;
+    }
 }
 
 void send_byte(uint32_t byte) {
@@ -133,19 +153,21 @@ void delay_start() {
 }
 
 uint32_t init_comm_protocol() {
-
     // delay_start();
     wakeup_slow();
 
     init_pio_tx();
 
     uint8_t w1 = 60;
-
     // per kwp2000 spec, sync byte should be sent between 60 and 300ms after wakeup
     sleep_ms(w1);
 
-    // 0x55
-    uint32_t sync_byte = read_byte();
+    // Wait for sync byte (0x55)
+    uint32_t sync_byte = read_byte_timeout(300000);  // 300ms timeout
+    if (sync_byte == UINT32_MAX) {
+        printf("Timeout waiting for sync byte\n");
+        return UINT32_MAX;
+    }
     printf("Sync byte: %x\n", sync_byte);
 
     uint8_t w2 = 5;
@@ -153,33 +175,52 @@ uint32_t init_comm_protocol() {
     // key byte 2 should be sent instantly after key byte 1
     sleep_ms(w2);
 
-    // key bytes
+    // Wait for key bytes
     // - 0xef 0x8f in programming mode
     // - 0x08 0x08 in KWP2000
-    uint32_t key_byte1 = read_byte();
+    uint32_t key_byte1 = read_byte_timeout(20000);  // 20ms timeout
+    if (key_byte1 == UINT32_MAX) {
+        printf("Timeout waiting for key byte 1\n");
+        return UINT32_MAX;
+    }
     printf("Key byte 1: %x\n", key_byte1);
-    uint32_t key_byte2 = read_byte();
+
+    uint32_t key_byte2 = read_byte_timeout(20000);  // 20ms timeout
+    if (key_byte2 == UINT32_MAX) {
+        printf("Timeout waiting for key byte 2\n");
+        return UINT32_MAX;
+    }
     printf("Key byte 2: %x\n", key_byte2);
 
     uint8_t w4 = 25;
     // per kwp2000 spec, complement byte response window is 25-50ms after key byte 2
-    // but it doesn't seem to be very strict
     sleep_ms(w4);
 
+    // Send complement of key byte 2
     uint32_t complement = 0xff - key_byte2;
-    printf("Complement: %x\n", complement);
+    printf("Sending complement: %x\n", complement);
     send_byte(complement);
 
-    // complement readback is instantly after complement byte
-    uint32_t complement_readback = read_byte();
+    // Wait for complement readback
+    uint32_t complement_readback = read_byte_timeout(50000);  // 50ms timeout
+    if (complement_readback == UINT32_MAX) {
+        printf("Timeout waiting for complement readback\n");
+        return UINT32_MAX;
+    }
     printf("Complement readback: %x\n", complement_readback);
 
-    if(complement_readback != complement) {
+    if (complement_readback != complement) {
         printf("Got %x response to complement, something went wrong\n", complement_readback);
+        return UINT32_MAX;
     }
 
-    // 0xee in boot mode, 0xcc in KWP2000
-    uint32_t readAddress = read_byte(); 
+    // Wait for final address byte
+    // 0xee in programming mode, 0xcc in KWP2000
+    uint32_t readAddress = read_byte_timeout(50000);  // 50ms timeout
+    if (readAddress == UINT32_MAX) {
+        printf("Timeout waiting for address byte\n");
+        return UINT32_MAX;
+    }
     printf("Read address: %x\n", readAddress);
 
     return readAddress;

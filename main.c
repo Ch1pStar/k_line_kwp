@@ -70,25 +70,27 @@ void handle_ecu_communication() {
     uint32_t current_time = to_ms_since_boot(get_absolute_time());
 
     // Send periodic heartbeat to ECU (read ECU ID)
-    // if (current_time - last_heartbeat >= 2000) {
-    //     KWP2000Service ecu_id_service = {0x1A, {0x9B}, 1};
-    //     KWP2000Response response;
-        
-    //     size_t packet_len = build_packet(&ecu_id_service);
-    //     ResponseStatus status = read_response(packet_len, &response);
-        
-    //     if (status == RESPONSE_OK) {
-    //         g_state_machine.lastEcuHeartbeat = current_time;
-    //         last_heartbeat = current_time;
+    if (current_time - last_heartbeat >= 4000) {
+        KWP2000Service ecu_keep_alive_service = {0x3e, {}, 1};
+        KWP2000Response response;
+
+        size_t packet_len = build_packet_silent(&ecu_keep_alive_service);
+        ResponseStatus status = read_response_silent(packet_len, &response);
+
+        if (status == RESPONSE_OK) {
+            g_state_machine.lastEcuHeartbeat = current_time;
+            last_heartbeat = current_time;
             
-    //         // Forward the data to RPI5 if it's connected
-    //         if (g_state_machine.rpi5Connected) {
-    //             handleEcuData(&response);
-    //         }else{
-    //             print_str_response(&response);
-    //         }
-    //     }
-    // }
+            // Forward the data to RPI5 if it's connected
+            // if (g_state_machine.rpi5Connected) {
+            //     handleEcuData(&response);
+            // }else{
+            //     print_str_response(&response);
+            // }
+        }else{
+            printf("ECU keep alive failed\n");
+        }
+    }
 }
 
 void handle_rpi5_communication() {
@@ -118,14 +120,14 @@ void handle_rpi5_communication() {
                 
             case MSG_CONNECT_ECU:
                 printf("Got ECU connect command\n");
-                printf("Is ECU connected: %d\n", g_state_machine.ecuConnected);
+                printf("Is ECU connected: %s\n", g_state_machine.ecuConnected ? "true" : "false");
                 if (!g_state_machine.ecuConnected) {
                     printf("Attempting to connect to ECU\n");
                     if (try_connect_ecu()) {
                         g_state_machine.ecuConnected = true;
                         g_state_machine.lastEcuHeartbeat = to_ms_since_boot(get_absolute_time());
                         printf("ECU connected successfully!\n");
-                        printf("ecuConnected: %d\n", g_state_machine.ecuConnected);
+                        printf("ecuConnected: %s\n", g_state_machine.ecuConnected ? "true" : "false");
                         g_state_machine.currentState = STATE_FULLY_OPERATIONAL;
                         
                         SerialFrame ack = {
@@ -151,7 +153,7 @@ void handle_rpi5_communication() {
                 break;
                 
             case MSG_COMMAND:
-                printf("ecuConnected: %d\n", g_state_machine.ecuConnected);
+                printf("Is ECU Connected: %s\n", g_state_machine.ecuConnected ? "true" : "false");
                 if (g_state_machine.ecuConnected) {
                     handleRpi5Command(&frame);
                 } else {

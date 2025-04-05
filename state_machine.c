@@ -3,7 +3,7 @@
 #include <stdlib.h>
 
 // Default timeout for heartbeat messages (ms)
-#define HEARTBEAT_TIMEOUT 5000
+#define HEARTBEAT_TIMEOUT 4000
 
 void initStateMachine(StateMachine* sm) {
     sm->currentState = STATE_IDLE;
@@ -21,10 +21,10 @@ void updateState(StateMachine* sm) {
     if (sm->ecuConnected && (currentTime - sm->lastEcuHeartbeat > sm->heartbeatTimeout)) {
         sm->ecuConnected = false;
     }
-    
-    if (sm->rpi5Connected && (currentTime - sm->lastRpi5Heartbeat > sm->heartbeatTimeout)) {
-        sm->rpi5Connected = false;
-    }
+   
+    // if (sm->rpi5Connected && (currentTime - sm->lastRpi5Heartbeat > sm->heartbeatTimeout)) {
+    //     sm->rpi5Connected = false;
+    // }
     
     // Update state based on connections
     switch (sm->currentState) {
@@ -265,20 +265,29 @@ bool receiveDebugCommand(SerialFrame* frame) {
         }
         // Check for normal KWP commands
         else if (strncmp(cmd_buffer, "CMD:", 4) == 0) {
-            char* token = strtok(cmd_buffer + 4, ",");
-            if (!token) return false;
-
-            // First token is service ID
-            frame->messageType = MSG_COMMAND;
-            frame->length = 1;  // Start with service ID only
+            const char* hex_str = cmd_buffer + 4;  // Skip "CMD:"
+            size_t hex_len = strlen(hex_str);
             
-            // Convert hex string to byte for service ID
-            frame->payload[0] = (uint8_t)strtol(token, NULL, 16);
+            if (hex_len % 2 != 0) {
+                printf("Error: Hex string length must be even\n");
+                return false;
+            }
 
-            // Parse parameters
-            while ((token = strtok(NULL, ",")) != NULL && frame->length < MAX_FRAME_SIZE) {
-                frame->payload[frame->length] = (uint8_t)strtol(token, NULL, 16);
-                frame->length++;
+            // First byte is service ID
+            frame->messageType = MSG_COMMAND;
+            frame->length = 0;
+
+            // Convert hex pairs to bytes
+            for (size_t i = 0; i < hex_len; i += 2) {
+                char hex_byte[3] = {hex_str[i], hex_str[i+1], '\0'};
+                uint8_t byte = (uint8_t)strtol(hex_byte, NULL, 16);
+                
+                if (frame->length < MAX_FRAME_SIZE) {
+                    frame->payload[frame->length++] = byte;
+                } else {
+                    printf("Error: Command too long\n");
+                    return false;
+                }
             }
 
             // Calculate checksum
@@ -287,7 +296,7 @@ bool receiveDebugCommand(SerialFrame* frame) {
                 frame->checksum ^= frame->payload[i];
             }
 
-            printf("\nDebug command received:\n");
+            printf("\nDebug command received...");
             debugPrintFrame(frame, "Debug Input");
             return true;
         }
