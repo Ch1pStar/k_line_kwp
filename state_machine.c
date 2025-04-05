@@ -1,5 +1,4 @@
 #include "state_machine.h"
-#include "pico/stdlib.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -245,55 +244,52 @@ void handleRpi5Command(const SerialFrame* frame) {
 }
 
 bool receiveDebugCommand(SerialFrame* frame) {
-    static char cmd_buffer[32];
-    static int buf_pos = 0;
-    int c;
+    char cmd_buffer[128];
+    
+    // Read a line from input using fgets
+    if (fgets(cmd_buffer, sizeof(cmd_buffer), stdin) != NULL) {
+        size_t buf_pos = strlen(cmd_buffer);
 
-    while ((c = getchar_timeout_us(0)) != PICO_ERROR_TIMEOUT) {
-        if (c == '\n' || c == '\r') {
-            if (buf_pos > 0) {
-                cmd_buffer[buf_pos] = '\0';
-                printf("Complete command received: \"%s\"\n", cmd_buffer);
+        // Remove newline characters if present
+        if (buf_pos > 0 && (cmd_buffer[buf_pos - 1] == '\n' || cmd_buffer[buf_pos - 1] == '\r')) {
+            cmd_buffer[--buf_pos] = '\0';
+        }
 
-                // Check for connect command
-                if (strcmp(cmd_buffer, "CONNECT") == 0) {
-                    frame->messageType = MSG_CONNECT_ECU;
-                    frame->length = 0;
+        printf("Complete command received: \"%s\" (length: %zu)\n", cmd_buffer, buf_pos);
 
-                    return true;
-                }
-                // Check for normal KWP commands
-                else if (strncmp(cmd_buffer, "CMD:", 4) == 0) {
-                    char* token = strtok(cmd_buffer + 4, ",");
-                    if (!token) return false;
+        // Check for connect command
+        if (strcmp(cmd_buffer, "CONNECT") == 0) {
+            frame->messageType = MSG_CONNECT_ECU;
+            frame->length = 0;
+            return true;
+        }
+        // Check for normal KWP commands
+        else if (strncmp(cmd_buffer, "CMD:", 4) == 0) {
+            char* token = strtok(cmd_buffer + 4, ",");
+            if (!token) return false;
 
-                    // First token is service ID
-                    frame->messageType = MSG_COMMAND;
-                    frame->length = 1;  // Start with service ID only
-                    
-                    // Convert hex string to byte for service ID
-                    frame->payload[0] = (uint8_t)strtol(token, NULL, 16);
+            // First token is service ID
+            frame->messageType = MSG_COMMAND;
+            frame->length = 1;  // Start with service ID only
+            
+            // Convert hex string to byte for service ID
+            frame->payload[0] = (uint8_t)strtol(token, NULL, 16);
 
-                    // Parse parameters
-                    while ((token = strtok(NULL, ",")) != NULL && frame->length < MAX_FRAME_SIZE) {
-                        frame->payload[frame->length] = (uint8_t)strtol(token, NULL, 16);
-                        frame->length++;
-                    }
-
-                    // Calculate checksum
-                    frame->checksum = frame->messageType ^ frame->length;
-                    for (int i = 0; i < frame->length; i++) {
-                        frame->checksum ^= frame->payload[i];
-                    }
-
-                    printf("\nDebug command received:\n");
-                    debugPrintFrame(frame, "Debug Input");
-                    return true;
-                }
-                buf_pos = 0;
+            // Parse parameters
+            while ((token = strtok(NULL, ",")) != NULL && frame->length < MAX_FRAME_SIZE) {
+                frame->payload[frame->length] = (uint8_t)strtol(token, NULL, 16);
+                frame->length++;
             }
-        } else if (buf_pos < sizeof(cmd_buffer) - 1) {
-            cmd_buffer[buf_pos++] = (char)c;
+
+            // Calculate checksum
+            frame->checksum = frame->messageType ^ frame->length;
+            for (int i = 0; i < frame->length; i++) {
+                frame->checksum ^= frame->payload[i];
+            }
+
+            printf("\nDebug command received:\n");
+            debugPrintFrame(frame, "Debug Input");
+            return true;
         }
     }
 

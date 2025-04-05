@@ -1,11 +1,13 @@
 #include "config.h"
 #include "state_machine.h"
+#include <pico/time.h>
 
 // Function prototypes
 void core1_entry();
 bool try_connect_ecu();
 void handle_ecu_communication();
 void handle_rpi5_communication();
+void start_ecu_communication_loop();
 
 // Global state machine
 StateMachine g_state_machine;
@@ -15,19 +17,19 @@ int main() {
     stdio_init_all();
     setup_default_uart();
 
-    sleep_ms(1000); // Wait for USB to initialize
-    printf("K-LINE intermediary starting...\n");
-
     // Initialize state machine
     initStateMachine(&g_state_machine);
+    // Launch core1 for handling RPI5 communication
+    multicore_launch_core1(core1_entry);
+    // Start ECU communication loop
+    start_ecu_communication_loop();
+}
 
+void start_ecu_communication_loop() {
     // Initialize K-LINE communication
     init_pio_rx();
     gpio_init(PIO_TX_PIN);
     gpio_set_dir(PIO_TX_PIN, GPIO_OUT);
-
-    // Launch core1 for handling RPI5 communication
-    multicore_launch_core1(core1_entry);
 
     // Main loop on core0 - handles ECU communication
     while (true) {
@@ -131,6 +133,11 @@ void handle_rpi5_communication() {
                             .length = 0
                         };
                         sendFrameToRpi5(&ack);
+
+                        sleep_ms(500);
+                        read_ecu_id();
+                        sleep_ms(500);
+                        read_dtcs();
                     } else {
                         printf("Failed to connect to ECU\n");
                         SerialFrame nack = {

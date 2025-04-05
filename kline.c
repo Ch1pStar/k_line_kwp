@@ -106,7 +106,7 @@ void wakeup_slow() {
     // initial state, line is high
     gpio_put(PIO_TX_PIN, 1);
     // per kawp2000 spec, wait 300ms while the line is idle(high)
-    uint16_t w5 = 300;
+    uint16_t w5 = 1500; // to be on the safe side as sometimes 300ms is not enough
     sleep_ms(w5);
 
     printf("Begin 5 baud initializaion address transmission\n");

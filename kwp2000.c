@@ -133,19 +133,19 @@ void print_dtc_status(uint8_t status) {
             printf("Unknown");
     }
 
-    printf(", Test %s", (status & 0x10) ? "not complete" : "complete or not applicable");
+    printf(",\n\tTest %s", (status & 0x10) ? "not complete" : "complete or not applicable");
 
     if ((status & 0x60) == 0x00) {
-        printf(", No DTC detected or stored");
+        printf(",\n\tNo DTC detected or stored");
     } else if ((status & 0x60) == 0x20) {
-        printf(", DTC not present at time of request but stored");
+        printf(",\n\tDTC not present at time of request but stored");
     } else if ((status & 0x60) == 0x40) {
-        printf(", DTC maturing - intermittent, insufficient data for storage");
+        printf(",\n\tDTC maturing - intermittent, insufficient data for storage");
     } else if ((status & 0x60) == 0x60) {
-        printf(", DTC present at time of request and stored");
+        printf(",\n\tDTC present at time of request and stored");
     }
 
-    printf(", Warning Lamp %s\n", (status & 0x80) ? "enabled" : "disabled");
+    printf(",\n\tWarning Lamp %s\n", (status & 0x80) ? "enabled" : "disabled");
 }
 
 // Helper function to convert DTC bytes into a human-readable DTC code
@@ -168,7 +168,7 @@ void print_dtc_data(DTCData *dtcs, size_t numDtc) {
     for (size_t i = 0; i < numDtc; ++i) {
         char dtcString[6]; // DTC string format: C1234
         convert_dtc_to_readable_format(dtcs[i].highByte, dtcs[i].lowByte, dtcString);
-        printf("DTC %zu: %s, Status: 0x%02X\n", i + 1, dtcString, dtcs[i].status);
+        printf("%s, Status: 0x%02X\n", dtcString, dtcs[i].status);
         print_dtc_status(dtcs[i].status);
     }
 }
