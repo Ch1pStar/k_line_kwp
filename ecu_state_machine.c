@@ -30,7 +30,6 @@ bool ecu_try_connect(ECUStateMachine* sm) {
     
     uint32_t result = init_comm_protocol();
     if (result == 0xee) {
-        printf("ECU connection successful\n");
         sm->connected = true;
         sm->lastHeartbeat = to_ms_since_boot(get_absolute_time());
         sm->currentState = ECU_STATE_CONNECTED;

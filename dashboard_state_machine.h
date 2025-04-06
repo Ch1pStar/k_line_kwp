@@ -58,3 +58,5 @@ bool receive_frame_from_dashboard(SerialFrame* frame);
 bool receive_debug_command(SerialFrame* frame); 
 // Debug function to print frame contents in human-readable format
 void debug_print_frame(const SerialFrame* frame, const char* prefix);
+
+bool dashboard_read_console_input(DashboardStateMachine* sm);
