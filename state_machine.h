@@ -22,8 +22,10 @@ typedef enum {
     MSG_COMMAND = 0x03,
     MSG_ACK = 0x04,
     MSG_NACK = 0x05,
-    MSG_CONNECT_ECU = 0x06  // New message type for ECU connection
-} MessageType;
+    MSG_CONNECT_ECU = 0x06,
+    MSG_DISCONNECT_ECU = 0x07,
+    MSG_ECU_DISCONNECTED = 0x08
+} MessageType; 
 
 // Frame format constants
 #define FRAME_START_BYTE 0x7E
