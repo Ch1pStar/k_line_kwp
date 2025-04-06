@@ -1,5 +1,4 @@
 #include "config.h"
-#include "state_machine.h"
 #include <pico/time.h>
 #include "dashboard_state_machine.h"
 #include "ecu_state_machine.h"
@@ -13,7 +12,7 @@ void handle_rpi5_communication();
 void start_ecu_communication_loop();
 
 // Global state machine
-StateMachine g_state_machine;
+// StateMachine g_state_machine;
 
 // Shared ring buffers for inter-core communication
 static RingBuffer dash_to_ecu_buffer;

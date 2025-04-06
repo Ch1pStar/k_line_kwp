@@ -1,4 +1,4 @@
-#include "state_machine.h"
+#include "dashboard_state_machine.h"
 #include "ecu_state_machine.h"
 #include "config.h"
 #include "pico/time.h"
@@ -161,7 +161,7 @@ void ecu_check_connection(ECUStateMachine* sm) {
 
 void ecu_process_messages(ECUStateMachine* sm) {
     BufferMessage msg;
-    
+
     while (ringbuffer_pop(sm->rxBuffer, &msg)) {
         switch (msg.messageType) {
             case MSG_CONNECT_ECU:
@@ -169,7 +169,7 @@ void ecu_process_messages(ECUStateMachine* sm) {
                     ecu_try_connect(sm);
                 }
                 break;
-                
+
             case MSG_COMMAND:
                 if (sm->connected) {
                     ecu_send_command(sm, &msg);
@@ -183,7 +183,7 @@ void ecu_process_messages(ECUStateMachine* sm) {
                     ringbuffer_push(sm->txBuffer, &nack);
                 }
                 break;
-                
+
             case MSG_DISCONNECT_ECU:
                 if (sm->connected) {
                     printf("Disconnecting from ECU\n");
