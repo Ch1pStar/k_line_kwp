@@ -37,7 +37,7 @@ int main() {
     }
 }
 
-// Core 1 entry point - handles RPI5 communication
+// Core 1 entry point - handles dashboard communication
 void core1_entry() {
     // Dashboard communication runs on core 1
     dashboard_init(&dash_sm, &dash_to_ecu_buffer, &ecu_to_dash_buffer);

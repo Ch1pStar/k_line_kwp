@@ -134,6 +134,7 @@ void wakeup_slow() {
     // with 5 baud, 1 bit time is 200ms
     // so we sleep 200ms between each bit
     wakeup_programming_mode();
+    // wakeup_kwp2000();
 }
 
 void delay_start() {

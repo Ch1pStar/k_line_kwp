@@ -70,12 +70,8 @@ void dashboard_process_debug_command(DashboardStateMachine* sm, const char* cmd_
     // Read DTCs command
     if (strcmp(cmd_buffer, "read-dtcs") == 0) {
         printf("Reading DTCs...\n");
-        BufferMessage cmdMsg = {
-            .messageType = MSG_COMMAND,
-            .length = 4,
-            .data = {0x18, 0x00, 0xFF, 0x00}  // Read DTCs service 
-        };
-        ringbuffer_push(sm->txBuffer, &cmdMsg);
+        // maybe this should be a command to the ECU state machine
+        read_dtcs();
         return;
     }
     

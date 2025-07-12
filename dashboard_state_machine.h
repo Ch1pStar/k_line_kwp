@@ -19,7 +19,7 @@ typedef struct {
 
 
 
-// Message types for RPI5 communication
+// Message types for dashboard communication
 typedef enum {
     MSG_HEARTBEAT = 0x00,
     MSG_ECU_DATA = 0x01,
@@ -37,7 +37,8 @@ typedef enum {
 #define FRAME_END_BYTE 0x7F
 #define MAX_FRAME_SIZE 256
 
-// Frame structure for RPI5 communication
+// Frame structure for dashboard communication
+// not used currently
 typedef struct {
     uint8_t messageType;
     uint8_t length;
