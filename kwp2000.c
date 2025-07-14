@@ -1,5 +1,76 @@
 #include "config.h"
 #include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+#include "dashboard_state_machine.h"
+
+extern unsigned char _binary_handler_bin_start[];
+extern unsigned char _binary_handler_bin_end[];
+
+void load_handler(DashboardStateMachine* sm) {
+    size_t size = _binary_handler_bin_end - _binary_handler_bin_start;
+    const unsigned char *data = _binary_handler_bin_start;
+    uint8_t chunk_size = 0x08;
+    const uint8_t num_chunks = (size + chunk_size - 1) / chunk_size;
+    uint32_t start_address = 0x387acc;
+
+    // printf("----------------------------------------------\n");
+    // printf("Data(size: %02X): ", size);
+    // for(uint8_t i = 0; i < size; i++) {
+    //     printf("%02X ", data[i]);
+    // }
+    // printf("\n");
+    // printf("----------------------------------------------\n");
+
+    printf("Loading handler into ECU RAM. Size: %zu, Number of chunks: %u\n", size, num_chunks);
+
+    for (uint8_t i = 0; i < num_chunks; i++) {
+        if(i+1 == num_chunks) {
+            chunk_size = size - (i * chunk_size);
+        }
+
+        uint32_t chunk_address = start_address + (i * chunk_size);
+        write_memory_chunk(sm, chunk_address, data, chunk_size, i);
+
+        sleep_ms(100);
+    }
+}
+
+void fill_distibutor_table(DashboardStateMachine* sm) {
+    // uint8_t handler_address[4] = {0xCC, 0x7A, 0x38, 0x00};
+    uint8_t data_size = 4;
+    uint8_t new_distributor_table_address[3] = {0x38, 0x7a, 0x00};
+    uint8_t new_distributor_end = 0xC0/data_size;
+    uint8_t handler_address[4] = {0x00, 0x38, 0x7a, 0xcc};
+
+    uint8_t command_length = 1 + 3 + 1 + data_size; // sid len(1) + address len(3) + data size(1) + data(size)
+    
+    for(uint8_t i = 0; i < new_distributor_end; i++) {
+        BufferMessage cmdMsg = {
+            .messageType = MSG_COMMAND,
+            .length = command_length,
+        };
+    
+        cmdMsg.data[0] = 0x3d; // Write memory service id
+
+        // target address
+        cmdMsg.data[1] = new_distributor_table_address[0];
+        cmdMsg.data[2] = new_distributor_table_address[1];
+        cmdMsg.data[3] = new_distributor_table_address[2] + (i*data_size);
+
+        // data size
+        cmdMsg.data[4] = data_size;
+
+        // data
+        memcpy(&cmdMsg.data[5], handler_address, 4); // data
+
+        ringbuffer_push(sm->txBuffer, &cmdMsg);
+
+        sleep_ms(100);
+    }
+
+}
+
 
 uint8_t calculate_checksum(const KWP2000Service* service) {
     uint8_t csum = 0;
@@ -50,8 +121,21 @@ ResponseStatus _do_read_response(size_t commandLength, KWP2000Response* response
 
     if (responseStatus == 0x7f) {
         if (!silent) {
-            printf("Error in response\n");
+            printf("Error in response, length: %02x\n", responseLength);
         }
+        printf("Error response: %02x ", responseStatus);
+        if(responseLength > 0) {
+            for (size_t i = 0; i < responseLength; ++i) {
+                uint32_t dataByte = read_byte_timeout(100000);
+                if (dataByte == UINT32_MAX) {
+                    printf("Timeout while reading error data byte %zu\n", i);
+                }else{
+                    printf("%02X ", dataByte);
+                }
+            }
+            printf("\n");
+        }
+
         return RESPONSE_ERROR;
     } else {
         if (!silent) {

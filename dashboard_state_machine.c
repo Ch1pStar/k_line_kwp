@@ -17,6 +17,24 @@ void dashboard_init(DashboardStateMachine* sm, RingBuffer* tx, RingBuffer* rx) {
 
 // Process commands from debug console
 void dashboard_process_debug_command(DashboardStateMachine* sm, const char* cmd_buffer) {
+
+    // Help command
+    if (strcmp(cmd_buffer, "help") == 0) {
+        printf("\n--- Available Commands ---\n");
+        printf("connect          - Connect to ECU\n");
+        printf("disconnect       - Disconnect from ECU\n");
+        printf("ecu-id           - Request ECU identification\n");
+        printf("read-dtcs        - Read diagnostic trouble codes\n");
+        printf("clear-dtcs       - Clear diagnostic trouble codes\n");
+        printf("diag-session     - Start special diagnostic session - unlocks memory read/write\n");
+        printf("load-handler     - Load handler into ECU\n");
+        printf("fill-distrbutor-table - Fill distributor table\n");
+        printf("cmd:XXXX         - Send raw KWP2000 command (hex format)\n");
+        printf("help             - Show this help\n");
+        printf("------------------------\n\n");
+        return;
+    }
+
     printf("Command received: \"%s\"\n", cmd_buffer);
     
     // Connect to ECU
@@ -27,6 +45,27 @@ void dashboard_process_debug_command(DashboardStateMachine* sm, const char* cmd_
             .length = 0
         };
         ringbuffer_push(sm->txBuffer, &connectMsg);
+
+        sleep_ms(4000);
+
+
+        printf("Starting special diagnostic session...\n");
+        BufferMessage cmdMsg = {
+            .messageType = MSG_COMMAND,
+            .length = 2,
+            .data = {0x10, 0x86}  // Start special diagnostic session
+        };
+        ringbuffer_push(sm->txBuffer, &cmdMsg);
+
+        sleep_ms(500);
+
+        load_handler(sm);
+
+        sleep_ms(3200);
+        fill_distibutor_table(sm);
+
+        printf("Done\n");
+
         return;
     }
     
@@ -38,20 +77,6 @@ void dashboard_process_debug_command(DashboardStateMachine* sm, const char* cmd_
             .length = 0
         };
         ringbuffer_push(sm->txBuffer, &disconnectMsg);
-        return;
-    }
-    
-    // Help command
-    if (strcmp(cmd_buffer, "help") == 0) {
-        printf("\n--- Available Commands ---\n");
-        printf("connect          - Connect to ECU\n");
-        printf("disconnect       - Disconnect from ECU\n");
-        printf("ecu-id           - Request ECU identification\n");
-        printf("read-dtcs        - Read diagnostic trouble codes\n");
-        printf("clear-dtcs       - Clear diagnostic trouble codes\n");
-        printf("cmd:XXXX         - Send raw KWP2000 command (hex format)\n");
-        printf("help             - Show this help\n");
-        printf("------------------------\n\n");
         return;
     }
     
@@ -86,14 +111,39 @@ void dashboard_process_debug_command(DashboardStateMachine* sm, const char* cmd_
         ringbuffer_push(sm->txBuffer, &cmdMsg);
         return;
     }
-    
+
+    // Start special diagnostic session
+    if (strcmp(cmd_buffer, "diag-session") == 0) {
+        printf("Starting special diagnostic session...\n");
+        BufferMessage cmdMsg = {
+            .messageType = MSG_COMMAND,
+            .length = 2,
+            .data = {0x10, 0x86}  // Start special diagnostic session
+        };
+        ringbuffer_push(sm->txBuffer, &cmdMsg);
+        return;
+    }
+
+    if (strcmp(cmd_buffer, "load-handler") == 0) {
+        printf("Loading handler into ECU...\n");
+        load_handler(sm);
+
+        return;
+    }
+
+    if (strcmp(cmd_buffer, "fill-distrbutor-table") == 0) {
+        printf("Filling distributor table...\n");
+        fill_distibutor_table(sm);
+        return;
+    }
+
     // Raw KWP2000 command (hexadecimal) "cmd:1A9B"
     if (strncmp(cmd_buffer, "cmd:", 4) == 0) {
         const char* hex_str = cmd_buffer + 4;  // Skip "cmd:"
         size_t hex_len = strlen(hex_str);
         
         if (hex_len == 0 || hex_len % 2 != 0) {
-            printf("Error: Hex string must have even number of characters\n");
+            printf("Error: Hex string must have even number of characters (length: %zu)\n", hex_len);
             return;
         }
         
@@ -174,7 +224,7 @@ void dashboard_process_ecu_messages(DashboardStateMachine* sm) {
 
 // Read input from the console
 bool dashboard_read_console_input(DashboardStateMachine* sm) {
-    static char cmd_buffer[128];
+    static char cmd_buffer[512];
     static int buf_pos = 0;
     int c;
     

@@ -2,6 +2,7 @@
 #include "ecu_state_machine.h"
 #include "config.h"
 #include "pico/time.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -226,4 +227,44 @@ void ecu_update(ECUStateMachine* sm) {
             // Will return to CONNECTED when processing complete
             break;
     }
-} 
+}
+
+void write_memory_chunk(DashboardStateMachine* sm, uint32_t address, const unsigned char *data, size_t size, uint8_t chunk_number) {
+
+    uint8_t address_size = 3;
+    uint8_t command_length = 1 + address_size + 1 + size; // sid len(1) + address len(3) + data size(1) + data(size)
+    // uint8_t command_data[command_length];
+    BufferMessage cmdMsg = {
+        .messageType = MSG_COMMAND,
+        .length = command_length,
+    };
+    
+    cmdMsg.data[0] = 0x3d; // Write memory service id
+
+    cmdMsg.data[1] = (address >> 16) & 0xFF;
+    cmdMsg.data[2] = (address >> 8) & 0xFF;
+    cmdMsg.data[3] = address & 0xFF;
+
+    cmdMsg.data[4] = size; // data size
+
+    // data is 8 bytes per chunk, except for the last chunk
+    // so we cant use size to calculate the offset
+    const uint8_t data_offset = chunk_number*8;
+    
+    // printf("----------------------------------------------\nData(%d, offset: %d, size: %d): ", chunk_number, data_offset, size);
+    // for(uint8_t i = 0; i < size; i++) {
+    //     printf("%02X ", data[data_offset+i]);
+    // }
+    // printf("\n");
+
+    memcpy(&cmdMsg.data[5], &data[data_offset], size); // data
+
+    printf("Writing memory chunk to ECU. Address: 0x%08X, Size: 0x%02X(%u), Chunk: %d\n", address, size, size, chunk_number);
+    // printf("Command data: ");
+    // for (size_t i = 0; i < sizeof(cmdMsg.data); i++) {
+    //     printf("%02X ", cmdMsg.data[i]);
+    // }
+    // printf("\n");
+
+    ringbuffer_push(sm->txBuffer, &cmdMsg);
+}

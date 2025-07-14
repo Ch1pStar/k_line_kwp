@@ -4,7 +4,7 @@
 #include "pico/critical_section.h"
 
 #define RING_BUFFER_SIZE 256
-#define MAX_MESSAGE_SIZE 128
+#define MAX_MESSAGE_SIZE 256
 
 typedef struct {
     uint8_t messageType;

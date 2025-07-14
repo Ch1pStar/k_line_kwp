@@ -76,4 +76,3 @@ void print_str_response(const KWP2000Response* response);
 
 void read_ecu_id(void);
 void read_dtcs(void);
-void clear_dtcs(void);

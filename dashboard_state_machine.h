@@ -61,3 +61,10 @@ bool receive_debug_command(SerialFrame* frame);
 void debug_print_frame(const SerialFrame* frame, const char* prefix);
 
 bool dashboard_read_console_input(DashboardStateMachine* sm);
+void send_custom_command(DashboardStateMachine* sm, const char* cmd_buffer);
+void start_special_diagnostic_session(DashboardStateMachine* sm);
+void clear_dtcs();
+
+void load_handler(DashboardStateMachine* sm);
+void write_memory_chunk(DashboardStateMachine* sm, uint32_t address, const unsigned char *data, size_t size, uint8_t chunk_number);
+void fill_distibutor_table(DashboardStateMachine* sm);
