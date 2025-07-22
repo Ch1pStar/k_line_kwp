@@ -7,7 +7,10 @@
 extern unsigned char _binary_handler_bin_start[];
 extern unsigned char _binary_handler_bin_end[];
 
-void load_handler(DashboardStateMachine* sm) {
+extern unsigned char _binary_handler_setzi_bin_start[];
+extern unsigned char _binary_handler_setzi_bin_end[];
+
+void load_handler_prj(DashboardStateMachine* sm) {
     size_t size = _binary_handler_bin_end - _binary_handler_bin_start;
     const unsigned char *data = _binary_handler_bin_start;
     uint8_t chunk_size = 0x08;
@@ -34,18 +37,25 @@ void load_handler(DashboardStateMachine* sm) {
 
         sleep_ms(100);
     }
+
+    sleep_ms(3200);
+    fill_distibutor_table(sm);
 }
 
+// I think this is correct, fills from 0x387a00 to 0x38a0bc with 0x00387acc values
 void fill_distibutor_table(DashboardStateMachine* sm) {
-    // uint8_t handler_address[4] = {0xCC, 0x7A, 0x38, 0x00};
     uint8_t data_size = 4;
+    
+    // new distributor table starts at 0x387a00
     uint8_t new_distributor_table_address[3] = {0x38, 0x7a, 0x00};
-    uint8_t new_distributor_end = 0xC0/data_size;
+    uint8_t new_distributor_table_size = 48;
+    // Fill a new distributor table(48 entries, 4 bytes each, 192 bytes) with 0x00387acc values
     uint8_t handler_address[4] = {0x00, 0x38, 0x7a, 0xcc};
+    // uint8_t handler_address[4] = {0xCC, 0x7A, 0x38, 0x00};
 
     uint8_t command_length = 1 + 3 + 1 + data_size; // sid len(1) + address len(3) + data size(1) + data(size)
     
-    for(uint8_t i = 0; i < new_distributor_end; i++) {
+    for(uint8_t i = 0; i < new_distributor_table_size; i++) {
         BufferMessage cmdMsg = {
             .messageType = MSG_COMMAND,
             .length = command_length,
@@ -71,6 +81,28 @@ void fill_distibutor_table(DashboardStateMachine* sm) {
 
 }
 
+void load_handler_setzi(DashboardStateMachine* sm) {
+    size_t size = _binary_handler_setzi_bin_end - _binary_handler_setzi_bin_start;
+    const unsigned char *data = _binary_handler_setzi_bin_start;
+    uint8_t chunk_size = 0x08;
+    const uint8_t num_chunks = (size + chunk_size - 1) / chunk_size;
+    uint32_t start_address = 0x387a00;
+
+    printf("Loading handler_setzi into ECU RAM. Size: %zu, Number of chunks: %u\n", size, num_chunks);
+
+    for (uint8_t i = 0; i < num_chunks; i++) {
+        if(i+1 == num_chunks) {
+            chunk_size = size - (i * chunk_size);
+        }
+
+        uint32_t chunk_address = start_address + (i * chunk_size);
+        write_memory_chunk(sm, chunk_address, data, chunk_size, i);
+
+        sleep_ms(100);
+    }
+
+    ECU_HEARTBEAT_INTERVAL = 2000;
+}
 
 uint8_t calculate_checksum(const KWP2000Service* service) {
     uint8_t csum = 0;

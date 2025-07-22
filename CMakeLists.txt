@@ -34,8 +34,15 @@ add_custom_command(
     DEPENDS handler.bin
 )
 
+# Convert handler_setzi.bin to object file
+add_custom_command(
+    OUTPUT handler_setzi.o
+    COMMAND ${CMAKE_OBJCOPY} -I binary -O elf32-littlearm -B arm handler_setzi.bin handler_setzi.o
+    DEPENDS handler_setzi.bin
+)
+
 # Dummy target to manage handler.o
-add_custom_target(generate_handler_obj DEPENDS handler.o)
+add_custom_target(generate_handler_obj DEPENDS handler.o handler_setzi.o)
 
 if (TARGET tinyusb_device)
 
@@ -55,7 +62,7 @@ if (TARGET tinyusb_device)
     add_dependencies(k_line_kwp generate_handler_obj)
 
     # Include the binary object file directly
-    target_sources(k_line_kwp PRIVATE handler.o)
+    target_sources(k_line_kwp PRIVATE handler.o handler_setzi.o)
 
     target_link_libraries(k_line_kwp PRIVATE
         pico_stdlib

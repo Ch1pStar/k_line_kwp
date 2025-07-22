@@ -58,11 +58,9 @@ void dashboard_process_debug_command(DashboardStateMachine* sm, const char* cmd_
         ringbuffer_push(sm->txBuffer, &cmdMsg);
 
         sleep_ms(500);
+        // load_handler_prj(sm);
+        load_handler_setzi(sm);
 
-        load_handler(sm);
-
-        sleep_ms(3200);
-        fill_distibutor_table(sm);
 
         printf("Done\n");
 
@@ -126,8 +124,8 @@ void dashboard_process_debug_command(DashboardStateMachine* sm, const char* cmd_
 
     if (strcmp(cmd_buffer, "load-handler") == 0) {
         printf("Loading handler into ECU...\n");
-        load_handler(sm);
-
+        // load_handler_prj(sm);
+        load_handler_setzi(sm);
         return;
     }
 

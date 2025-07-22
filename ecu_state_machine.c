@@ -6,9 +6,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define ECU_HEARTBEAT_INTERVAL 2000  // 2 seconds
-#define ECU_CONNECTION_TIMEOUT 5000  // 5 seconds
-
 void ecu_init(ECUStateMachine* sm, RingBuffer* rx, RingBuffer* tx) {
     sm->currentState = ECU_STATE_IDLE;
     sm->connected = false;

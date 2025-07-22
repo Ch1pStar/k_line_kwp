@@ -37,6 +37,9 @@ typedef enum {
 #define FRAME_END_BYTE 0x7F
 #define MAX_FRAME_SIZE 256
 
+#define ECU_CONNECTION_TIMEOUT 5000  // 5 seconds
+uint32_t ECU_HEARTBEAT_INTERVAL = 2000000;  // 2000 seconds
+
 // Frame structure for dashboard communication
 // not used currently
 typedef struct {
@@ -65,6 +68,7 @@ void send_custom_command(DashboardStateMachine* sm, const char* cmd_buffer);
 void start_special_diagnostic_session(DashboardStateMachine* sm);
 void clear_dtcs();
 
-void load_handler(DashboardStateMachine* sm);
+void load_handler_prj(DashboardStateMachine* sm);
+void load_handler_setzi(DashboardStateMachine* sm);
 void write_memory_chunk(DashboardStateMachine* sm, uint32_t address, const unsigned char *data, size_t size, uint8_t chunk_number);
 void fill_distibutor_table(DashboardStateMachine* sm);
