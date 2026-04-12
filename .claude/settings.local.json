@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake ..)",
+      "Bash(arm-none-eabi-gcc --version)",
+      "Bash(apt list:*)",
+      "Bash(apt-get update:*)",
+      "Bash(apt-get install:*)",
+      "Bash(git clone:*)",
+      "Bash(chmod -R u+w /opt/projects/side-projects/k_line_kwp/build)",
+      "Bash(PICO_SDK_PATH=/opt/pico-sdk cmake ..)",
+      "Bash(ls /opt/projects/side-projects/k_line_kwp/*.bin)",
+      "Bash(ls /opt/projects/side-projects/k_line_kwp/build/*.bin)",
+      "Bash(arm-none-eabi-nm:*)",
+      "Bash(chmod +x:*)",
+      "Bash(/opt/projects/side-projects/k_line_kwp/build.sh)",
+      "Bash(git rm:*)",
+      "Bash(git config:*)",
+      "Bash(echo \"---EXIT:$?---\")"
+    ]
+  }
+}

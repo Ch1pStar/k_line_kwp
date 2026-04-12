@@ -30,15 +30,19 @@ pico_sdk_init()
 # Convert handler.bin to object file
 add_custom_command(
     OUTPUT handler.o
-    COMMAND ${CMAKE_OBJCOPY} -I binary -O elf32-littlearm -B arm handler.bin handler.o
-    DEPENDS handler.bin
+    COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_OBJCOPY} -I binary -O elf32-littlearm -B arm
+        handler.bin ${CMAKE_CURRENT_BINARY_DIR}/handler.o
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/handler.bin
 )
 
 # Convert handler_setzi.bin to object file
 add_custom_command(
     OUTPUT handler_setzi.o
-    COMMAND ${CMAKE_OBJCOPY} -I binary -O elf32-littlearm -B arm handler_setzi.bin handler_setzi.o
-    DEPENDS handler_setzi.bin
+    COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_OBJCOPY} -I binary -O elf32-littlearm -B arm
+        handler_setzi.bin ${CMAKE_CURRENT_BINARY_DIR}/handler_setzi.o
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/handler_setzi.bin
 )
 
 # Dummy target to manage handler.o
@@ -47,16 +51,18 @@ add_custom_target(generate_handler_obj DEPENDS handler.o handler_setzi.o)
 if (TARGET tinyusb_device)
 
     add_executable(k_line_kwp
-        kline.c
-        kwp2000.c
-        main.c
-        ring_buffer.c
-        dashboard_state_machine.c
-        ecu_state_machine.c
-        config.h
+        src/uart.c
+        src/kline.c
+        src/kwp2000.c
+        src/main.c
+        src/ring_buffer.c
+        src/dashboard.c
+        src/ecu_state_machine.c
     )
 
-    pico_generate_pio_header(k_line_kwp ${CMAKE_CURRENT_LIST_DIR}/uart_rx.pio)
+    target_include_directories(k_line_kwp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+    pico_generate_pio_header(k_line_kwp ${CMAKE_CURRENT_SOURCE_DIR}/src/uart_rx.pio)
 
     # Add dependency on the object file generator
     add_dependencies(k_line_kwp generate_handler_obj)
