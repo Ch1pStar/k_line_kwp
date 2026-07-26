@@ -18,6 +18,14 @@ void uart_pio_init_tx(void);
 // Initialize PIO-based UART RX
 void uart_pio_init_rx(void);
 
+// Hand the TX pin back to plain GPIO (SIO) control.
+//
+// uart_pio_init_tx() gives the pin to the PIO, after which gpio_put() on it is
+// silently ignored. The 5-baud wakeup bit-bangs the line with gpio_put, so
+// without this it transmits nothing at all on every connect after the first -
+// the ECU never sees the 0x88 wakeup and never sends a sync byte.
+void uart_pio_release_tx_pin(void);
+
 // Discard anything sitting in the RX FIFO.
 //
 // The K-line is one wire shared with everything else on it, and a connect that

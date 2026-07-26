@@ -26,9 +26,7 @@ void ecu_init(ECUStateMachine *sm, RingBuffer *rx, RingBuffer *tx) {
 
     // Initialize PIO RX and TX pin for K-Line
     uart_pio_init_rx();
-    gpio_init(PIO_TX_PIN);
-    gpio_set_dir(PIO_TX_PIN, GPIO_OUT);
-    gpio_put(PIO_TX_PIN, 1); // Idle state is high
+    uart_pio_release_tx_pin();  // TX starts as plain GPIO, idle high
 
     klog("ECU state machine initialized");
 }

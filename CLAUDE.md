@@ -76,6 +76,18 @@ Requires Pico SDK at `$PICO_SDK_PATH` (default: `/opt/pico-sdk`). Uses CMake + G
 - Positive response SID = request SID + 0x40
 - Negative response = `0x7F [rejected SID] [NRC]`
 
+### Connect only ever worked once per Pico boot (fixed 2026-07-26)
+
+`wakeup_programming_mode()` bit-bangs the 5-baud `0x88` with `gpio_put()`, but the first
+connect finishes by calling `uart_pio_init_tx()`, which hands that pin to the PIO. After
+that `gpio_put()` on it is silently ignored, so every later wakeup transmitted **nothing**
+— the ECU never saw `0x88`, never sent a sync byte, and looked dead. Every apparent
+"the ECU needs a power cycle" was really this: reflashing reset the pin, which is why
+recovery always seemed to require touching hardware.
+
+`kline_init_connection()` now calls `uart_pio_release_tx_pin()` first, taking the pin back
+to SIO before the wakeup. Reconnecting mid-boot works.
+
 ## K-Line Init Sequence
 
 1. Line idle 1.5s (high)
@@ -111,11 +123,16 @@ start-logging    # injects handler and sets everything up (see below)
 read-log         # sample; repeat as needed
 ```
 
-`start-logging` runs, in order: `heartbeat:2000` -> `diag-session` -> `load-handler`
--> redirect `0xE228` -> init trigger (`0x3E`) -> set variables (`0xB7` + list). Keeping
-the heartbeat short is essential — the KWP session times out in ~3-5s of silence, and a
-dropped session is unrecoverable without an **ECU power cycle**. Connect once and keep
-sampling; do not disconnect/reconnect mid-session.
+`start-logging` runs, in order: `diag-session` -> `load-handler` -> redirect `0xE228`
+-> init trigger (`0x3E`) -> set variables (`0xB7` + list), all on core 0 (`me7_handler.c`).
+Keep the heartbeat short — the KWP session times out in ~3-5s of silence.
+
+**A dropped session is recoverable** (corrected 2026-07-26): `connect` again and re-run
+`start-logging`. The old claim that it needed an **ECU power cycle** was a misdiagnosis of
+the TX-pin bug below — connect only ever worked once per Pico boot, so any reconnect
+attempt failed and the ECU looked dead. Verified by recovering a wedged handler state with
+the ECU continuously powered on its bench supply (a `DEADBEEF` written to `0x387800`
+before the recovery was still there afterwards, proving its RAM was never cleared).
 
 ## KWP2000 Services Used
 
@@ -158,16 +175,20 @@ wrote the handler pointer in the wrong byte order (`00 38 7A CC` instead of litt
 ### Do not reinstall while the redirect is live
 
 Running `start-logging` again on an ECU that already has the handler installed **breaks
-the ECU's other services until a power cycle**. The write chunks travel through the
+`0x23` and `0x3D` for the rest of that session**. The write chunks travel through the
 handler's own service table; by chunk 12 the rewrite has undone the copy of the original
-table that the init trigger made, so `0x3D` and `0x23` start returning SNS and cannot be
-used to undo it. `0xB7` keeps working (logging survives), and no software sequence
-recovers the rest — `0x3E` does not make the handler re-copy the table.
+table that the init trigger made, so those services start returning SNS and cannot be used
+to undo it. `0xB7` keeps working, so logging survives, and nothing recovers the rest
+*within the session* — `0x3E` does not make the handler re-copy the table.
 
-To reinstall safely, first put the original pointer back at `0xE228`
-(`cmd:3D00E22804D0270602`) so writes route through the ECU's own dispatcher again, then
-run `start-logging`. From an ECU that has just been power-cycled, `start-logging` is
-always safe.
+**Recovery is cheap:** let the session drop (or `disconnect`), `connect` again, then
+`start-logging`. The fresh session restores normal dispatch and the reinstall then runs
+against a working `0x3D`. No power cycle of anything is needed — verified with the ECU
+continuously powered.
+
+To avoid it in the first place, either reinstall only after a reconnect, or put the
+original pointer back at `0xE228` first (`cmd:3D00E22804D0270602`) so writes route through
+the ECU's own dispatcher.
 
 ## What Was Wrong (2026-07 debugging session)
 

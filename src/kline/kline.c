@@ -41,6 +41,12 @@ static void wakeup_slow(void) {
 }
 
 uint32_t kline_init_connection(void) {
+    // Take the TX pin back from the PIO. A previous connect left it under PIO
+    // control, and the wakeup below drives it with gpio_put, which the PIO
+    // silently overrides - so without this every connect after the first sends
+    // nothing and times out waiting for a sync byte that was never triggered.
+    uart_pio_release_tx_pin();
+
     // Clear anything left on the line by a previous session before waking the
     // ECU. Done here rather than just before reading the sync byte: at this
     // point the ECU has not been asked for anything yet, so there is no risk of

@@ -51,6 +51,14 @@ void uart_set_baud(uint32_t baud) {
     if (tx_loaded) uart_pio_init_tx();
 }
 
+void uart_pio_release_tx_pin(void) {
+    // gpio_init() resets the pin's function select to SIO, taking it back from
+    // the PIO. Idle state on the K-line is high.
+    gpio_init(PIO_TX_PIN);
+    gpio_set_dir(PIO_TX_PIN, GPIO_OUT);
+    gpio_put(PIO_TX_PIN, 1);
+}
+
 void uart_pio_flush_rx(void) {
     while (!pio_sm_is_rx_fifo_empty(pio_rx, sm_rx)) {
         (void)uart_rx_program_getc(pio_rx, sm_rx);
