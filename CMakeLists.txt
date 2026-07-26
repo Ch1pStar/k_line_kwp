@@ -51,20 +51,27 @@ add_custom_target(generate_handler_obj DEPENDS handler.o handler_setzi.o)
 if (TARGET tinyusb_device)
 
     add_executable(k_line_kwp
-        src/uart.c
-        src/kline.c
-        src/kwp2000.c
-        src/log.c
         src/main.c
-        src/ring_buffer.c
-        src/command.c
-        src/console.c
-        src/ecu_state_machine.c
+        src/platform/uart_pio.c
+        src/kline/kline.c
+        src/kline/kwp2000.c
+        src/ecu/ecu_state_machine.c
+        src/host/command.c
+        src/host/console.c
+        src/ipc/ring_buffer.c
+        src/ipc/log.c
     )
 
-    target_include_directories(k_line_kwp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_include_directories(k_line_kwp PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/kline
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/ecu
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/host
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/ipc
+    )
 
-    pico_generate_pio_header(k_line_kwp ${CMAKE_CURRENT_SOURCE_DIR}/src/uart_rx.pio)
+    pico_generate_pio_header(k_line_kwp ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/uart_rx.pio)
 
     # Add dependency on the object file generator
     add_dependencies(k_line_kwp generate_handler_obj)

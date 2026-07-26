@@ -1,5 +1,5 @@
 #include "kwp2000.h"
-#include "uart.h"
+#include "uart_pio.h"
 #include "log.h"
 
 #include <stdio.h>

@@ -1,5 +1,5 @@
 #include "kline.h"
-#include "uart.h"
+#include "uart_pio.h"
 #include "log.h"
 
 #include "pico/stdlib.h"

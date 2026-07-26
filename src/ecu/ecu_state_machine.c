@@ -1,5 +1,5 @@
 #include "ecu_state_machine.h"
-#include "uart.h"
+#include "uart_pio.h"
 #include "kline.h"
 #include "kwp2000.h"
 #include "log.h"
