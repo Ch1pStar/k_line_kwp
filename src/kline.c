@@ -1,14 +1,14 @@
 #include "kline.h"
 #include "uart.h"
+#include "log.h"
 
-#include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
 
 static void wakeup_programming_mode(void) {
     // Send 0x88 at 5 baud (200ms per bit), LSB first
     // Programming mode wakeup for Bosch ME7.5 or similar ECUs
-    printf("Begin programming mode wakeup - sending 0x88 over 5 baud\n");
+    klog("Begin programming mode wakeup - sending 0x88 over 5 baud");
 
     // Start bit (low)
     gpio_put(PIO_TX_PIN, 0);
@@ -36,7 +36,7 @@ static void wakeup_slow(void) {
     // Per KWP2000 spec, wait 300ms+ while line is idle
     sleep_ms(1500); // Conservative wait
 
-    printf("Begin 5 baud initialization address transmission\n");
+    klog("Begin 5 baud initialization address transmission");
     wakeup_programming_mode();
 }
 
@@ -52,55 +52,55 @@ uint32_t kline_init_connection(void) {
     // Wait for sync byte (0x55)
     uint32_t sync_byte = uart_read_byte_timeout(300000);
     if (sync_byte == UART_TIMEOUT) {
-        printf("Timeout waiting for sync byte\n");
+        klog("Timeout waiting for sync byte");
         return UART_TIMEOUT;
     }
-    printf("Sync byte: %x\n", sync_byte);
+    klog("Sync byte: %x", sync_byte);
 
     // Key bytes arrive 5-20ms after sync
     sleep_ms(5);
 
     uint32_t key_byte1 = uart_read_byte_timeout(20000);
     if (key_byte1 == UART_TIMEOUT) {
-        printf("Timeout waiting for key byte 1\n");
+        klog("Timeout waiting for key byte 1");
         return UART_TIMEOUT;
     }
-    printf("Key byte 1: %x\n", key_byte1);
+    klog("Key byte 1: %x", key_byte1);
 
     uint32_t key_byte2 = uart_read_byte_timeout(20000);
     if (key_byte2 == UART_TIMEOUT) {
-        printf("Timeout waiting for key byte 2\n");
+        klog("Timeout waiting for key byte 2");
         return UART_TIMEOUT;
     }
-    printf("Key byte 2: %x\n", key_byte2);
+    klog("Key byte 2: %x", key_byte2);
 
     // Complement response window is 25-50ms after key byte 2
     sleep_ms(25);
 
     uint32_t complement = 0xff - key_byte2;
-    printf("Sending complement: %x\n", complement);
+    klog("Sending complement: %x", complement);
     uart_send_byte(complement);
 
     // Wait for complement readback
     uint32_t complement_readback = uart_read_byte_timeout(50000);
     if (complement_readback == UART_TIMEOUT) {
-        printf("Timeout waiting for complement readback\n");
+        klog("Timeout waiting for complement readback");
         return UART_TIMEOUT;
     }
-    printf("Complement readback: %x\n", complement_readback);
+    klog("Complement readback: %x", complement_readback);
 
     if (complement_readback != complement) {
-        printf("Got %x response to complement, something went wrong\n", complement_readback);
+        klog("Got %x response to complement, something went wrong", complement_readback);
         return UART_TIMEOUT;
     }
 
     // Final address byte: 0xee = programming mode, 0xcc = KWP2000
     uint32_t address = uart_read_byte_timeout(50000);
     if (address == UART_TIMEOUT) {
-        printf("Timeout waiting for address byte\n");
+        klog("Timeout waiting for address byte");
         return UART_TIMEOUT;
     }
-    printf("Read address: %x\n", address);
+    klog("Read address: %x", address);
 
     return address;
 }

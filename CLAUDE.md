@@ -13,7 +13,8 @@ A companion project at `../../misc/logger_handler/` contains a 236-byte C166 ass
 Dual-core design on the RP2040:
 - **Core 0** (`ecu_state_machine.c`): K-Line init, KWP2000 packet send/receive, heartbeat keep-alive. Runs the ECU connection state machine.
 - **Core 1** (`dashboard.c`): USB serial console UI, command parsing, handler binary loading. User-facing interface.
-- **Inter-core comms** (`ring_buffer.c`): Lock-free(ish) ring buffer with critical sections. 256 messages, 256 bytes each. Message types defined in `ecu_state_machine.h`.
+- **Inter-core comms** (`ring_buffer.c`): lock-free SPSC ring buffer, 128 messages of 128 bytes each. Exactly one core pushes and one pops a given buffer; `__dmb()` barriers order the payload copy against the index update. Message types live in `messages.h`.
+- **Logging** (`log.c`): core 0 must never `printf` — stdio_usb is not multicore-safe and can block for milliseconds mid-transaction. Core 0 calls `klog()`, which queues the line for core 1 to print and *drops* it if the queue is full (reporting the gap), so the K-line path never waits on the console.
 
 ## Hardware
 
@@ -36,7 +37,9 @@ src/
   kwp2000.c / kwp2000.h  - Packet framing, checksum, send/receive, DTC parsing
   ecu_state_machine.c/h  - Core 0 state machine (IDLE -> CONNECTING -> CONNECTED)
   dashboard.c / dashboard.h - Core 1 console commands, handler loading
-  ring_buffer.c / ring_buffer.h - Inter-core message queue
+  ring_buffer.c / ring_buffer.h - Inter-core message queue (SPSC, lock-free)
+  messages.h             - Inter-core message type enum
+  log.c / log.h          - klog(): core 0 logging via the message queue
 ```
 
 Binary blobs linked into firmware:
@@ -184,6 +187,7 @@ MSG_ECU_DISCONNECTED = 0x08  // Connection lost (unsolicited)
 MSG_SET_HEARTBEAT    = 0x09  // Set heartbeat interval (4 bytes, big-endian ms)
 MSG_RAW_COMMAND      = 0x0A  // Send frame, dump every reply byte verbatim (raw:)
 MSG_SET_BAUD         = 0x0B  // Change K-line bit rate (4 bytes, big-endian)
+MSG_LOG              = 0x0C  // Text line from core0 for core1 to print
 ```
 
 ## ResponseStatus (kwp2000.h)
@@ -201,8 +205,8 @@ heartbeat must **not** disconnect on it — only a true `RESPONSE_ERROR` indicat
 | PIO_TX_PIN | 15 |
 | MAX_DATA_SIZE | 255 |
 | MAX_RESPONSE_SIZE | 80 |
-| RING_BUFFER_SIZE | 256 |
-| MAX_MESSAGE_SIZE | 256 |
+| RING_BUFFER_SIZE | 128 |
+| MAX_MESSAGE_SIZE | 128 |
 | DEFAULT_HEARTBEAT_INTERVAL_MS | 5000 |
 
 ## ECU Target

@@ -55,6 +55,19 @@ static void send_set_heartbeat(Dashboard *dash, uint32_t interval_ms) {
 
 // Forward declarations
 static void fill_distributor_table(Dashboard *dash);
+static void process_ecu_messages(Dashboard *dash);
+
+// Wait, but keep draining core 0's messages while doing it. Loading the handler
+// spends ~7s in these pauses, and a console that stops consuming during them
+// overflows the log queue - the first run of this dropped 70 lines. Phase 3
+// moves the sequencing to core 0 and these waits disappear entirely.
+static void dash_wait_ms(Dashboard *dash, uint32_t ms) {
+    absolute_time_t deadline = make_timeout_time_ms(ms);
+    do {
+        process_ecu_messages(dash);
+        sleep_ms(1);
+    } while (!time_reached(deadline));
+}
 
 static void load_handler_setzi(Dashboard *dash) {
     size_t size = _binary_handler_setzi_bin_end - _binary_handler_setzi_bin_start;
@@ -74,7 +87,7 @@ static void load_handler_setzi(Dashboard *dash) {
         }
 
         send_write_memory_chunk(dash, start_address + offset, data, this_chunk, offset);
-        sleep_ms(100);
+        dash_wait_ms(dash, 100);
     }
 
     // send_set_heartbeat(dash, 2000);
@@ -98,10 +111,10 @@ static void load_handler_prj(Dashboard *dash) {
         }
 
         send_write_memory_chunk(dash, start_address + offset, data, this_chunk, offset);
-        sleep_ms(100);
+        dash_wait_ms(dash, 100);
     }
 
-    sleep_ms(3200);
+    dash_wait_ms(dash, 3200);
     fill_distributor_table(dash);
 }
 
@@ -126,7 +139,7 @@ static void fill_distributor_table(Dashboard *dash) {
         memcpy(&msg.data[5], handler_address, 4);
 
         ringbuffer_push(dash->tx_buffer, &msg);
-        sleep_ms(100);
+        dash_wait_ms(dash, 100);
     }
 }
 
@@ -164,37 +177,37 @@ static void start_logging(Dashboard *dash) {
     //    out in the gaps between steps and every later command fails.
     printf("[1/6] heartbeat -> 2000ms\n");
     send_set_heartbeat(dash, 2000);
-    sleep_ms(200);
+    dash_wait_ms(dash, 200);
 
     // 2. Manufacturer session - required before ReadMemoryByAddress/WriteMemory.
     printf("[2/6] diagnostic session (10 86)\n");
     { uint8_t d[] = {0x10, 0x86}; send_command(dash, d, sizeof(d)); }
-    sleep_ms(300);
+    dash_wait_ms(dash, 300);
 
     // 3. Write the 582-byte handler to RAM at 0x387A00. Must happen before the
     //    redirect, while 0x3D still routes through the original dispatcher.
     printf("[3/6] loading handler\n");
     load_handler_setzi(dash);
-    sleep_ms(200);
+    dash_wait_ms(dash, 200);
 
     // 4. Redirect the service-table pointer at 0xE228 to our table at 0x387A00.
     //    Bytes 00 3A E1 00 are the C166 far-pointer encoding of 0x387A00.
     printf("[4/6] redirecting service table (0xE228 -> 0x387A00)\n");
     { uint8_t d[] = {0x3D, 0x00, 0xE2, 0x28, 0x04, 0x00, 0x3A, 0xE1, 0x00};
       send_command(dash, d, sizeof(d)); }
-    sleep_ms(300);
+    dash_wait_ms(dash, 300);
 
     // 5. First post-redirect call runs the handler's table-copy init. It returns
     //    SNS for 0x3E itself; that is expected and harmless.
     printf("[5/6] init trigger (3E)\n");
     { uint8_t d[] = {0x3E}; send_command(dash, d, sizeof(d)); }
-    sleep_ms(300);
+    dash_wait_ms(dash, 300);
 
     // 6. Hand the variable list to the handler. Positive response is 0xF7.
     //    After this, a bare `read-log` returns the packed values.
     printf("[6/6] setting log variables (B7 + list)\n");
     send_command(dash, set_log_vars_cmd, sizeof(set_log_vars_cmd));
-    sleep_ms(300);
+    dash_wait_ms(dash, 300);
 
     printf("=== handler ready. Use `read-log` to sample. ===\n\n");
 }
@@ -325,6 +338,15 @@ static void process_command(Dashboard *dash, const char *cmd) {
             return;
         }
 
+        // The console accepts a 512-char line, which is more bytes than a
+        // message slot holds. Reject rather than truncate - a silently
+        // shortened KWP frame is a confusing way to fail.
+        if (hex_len / 2 > MAX_MESSAGE_SIZE) {
+            printf("Error: command is %zu bytes, max %u\n",
+                   hex_len / 2, (unsigned)MAX_MESSAGE_SIZE);
+            return;
+        }
+
         BufferMessage msg = {
             .messageType = is_raw ? MSG_RAW_COMMAND : MSG_COMMAND,
             .length = hex_len / 2,
@@ -386,6 +408,11 @@ static void process_ecu_messages(Dashboard *dash) {
 
             case MSG_ECU_DISCONNECTED:
                 printf("ECU disconnected\n");
+                break;
+
+            // Core 0 never prints directly (see log.h) - it queues lines here.
+            case MSG_LOG:
+                printf("%.*s\n", (int)msg.length, (const char *)msg.data);
                 break;
 
             default:

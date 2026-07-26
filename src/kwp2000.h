@@ -24,6 +24,9 @@ typedef enum {
 } ResponseStatus;
 
 typedef struct {
+    // Response service id (request SID + 0x40, or 0x7F when rejected). Not
+    // included in data[], which holds only what follows it.
+    uint8_t serviceId;
     uint8_t data[MAX_RESPONSE_SIZE];
     size_t dataSize;
 } KWP2000Response;

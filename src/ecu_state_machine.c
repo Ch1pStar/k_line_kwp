@@ -2,6 +2,7 @@
 #include "uart.h"
 #include "kline.h"
 #include "kwp2000.h"
+#include "log.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -24,11 +25,11 @@ void ecu_init(ECUStateMachine *sm, RingBuffer *rx, RingBuffer *tx) {
     gpio_set_dir(PIO_TX_PIN, GPIO_OUT);
     gpio_put(PIO_TX_PIN, 1); // Idle state is high
 
-    printf("ECU state machine initialized\n");
+    klog("ECU state machine initialized");
 }
 
 static bool ecu_try_connect(ECUStateMachine *sm) {
-    printf("Attempting to connect to ECU...\n");
+    klog("Attempting to connect to ECU...");
     sm->state = ECU_STATE_CONNECTING;
 
     uint32_t result = kline_init_connection();
@@ -46,7 +47,7 @@ static bool ecu_try_connect(ECUStateMachine *sm) {
         return true;
     }
 
-    printf("ECU connection failed\n");
+    klog("ECU connection failed");
     sm->connected = false;
     sm->state = ECU_STATE_IDLE;
 
@@ -61,7 +62,7 @@ static bool ecu_try_connect(ECUStateMachine *sm) {
 
 static bool ecu_send_command(ECUStateMachine *sm, const BufferMessage *msg) {
     if (!sm->connected) {
-        printf("Cannot send command - ECU not connected\n");
+        klog("Cannot send command - ECU not connected");
         return false;
     }
 
@@ -112,7 +113,7 @@ static bool ecu_send_command(ECUStateMachine *sm, const BufferMessage *msg) {
 // the tool for finding out what the ECU actually put on the wire.
 static void ecu_send_raw(ECUStateMachine *sm, const BufferMessage *msg) {
     if (!sm->connected) {
-        printf("Cannot send raw command - ECU not connected\n");
+        klog("Cannot send raw command - ECU not connected");
         return;
     }
 
@@ -124,19 +125,32 @@ static void ecu_send_raw(ECUStateMachine *sm, const BufferMessage *msg) {
     }
 
     size_t sent = kwp2000_send(&service, false);
-    printf("RAW: sent %u bytes (echo consumed inline); dumping the reply verbatim\n",
-           (unsigned)sent);
+    klog("RAW: sent %u bytes (echo consumed inline); dumping the reply verbatim",
+         (unsigned)sent);
 
+    // Build one log line per 16 bytes instead of a byte at a time - the log
+    // queue carries whole lines, and a per-byte printf would be 256 messages.
     size_t count = 0;
+    char line[16 * 3 + 1];
+    size_t line_len = 0;
     while (count < 256) {
         uint32_t byte = uart_read_byte_timeout(300000);
         if (byte == UART_TIMEOUT) break;
-        if (count % 16 == 0) printf("\n  [%3u] ", (unsigned)count);
-        printf("%02X ", (unsigned)byte);
+
+        line_len += snprintf(line + line_len, sizeof(line) - line_len,
+                             "%02X ", (unsigned)byte);
         count++;
+
+        if (count % 16 == 0) {
+            klog("  [%3u] %s", (unsigned)(count - 16), line);
+            line_len = 0;
+        }
+    }
+    if (line_len > 0) {
+        klog("  [%3u] %s", (unsigned)(count - (count % 16)), line);
     }
 
-    printf("\nRAW: %u reply bytes.\n", (unsigned)count);
+    klog("RAW: %u reply bytes.", (unsigned)count);
 
     sm->last_activity = to_ms_since_boot(get_absolute_time());
 
@@ -152,7 +166,7 @@ static void ecu_check_connection(ECUStateMachine *sm) {
     if (now - sm->last_activity < sm->heartbeat_interval_ms) return;
 
     // Time for a heartbeat — send keep-alive to check the connection is still up
-    // printf("Sending heartbeat\n");
+    // klog("Sending heartbeat");
     KWP2000Service keep_alive = {.serviceId = 0x3E, .dataLength = 0};
     KWP2000Response keep_alive_resp;
     ResponseStatus status = kwp2000_execute(&keep_alive, &keep_alive_resp, true);
@@ -164,7 +178,7 @@ static void ecu_check_connection(ECUStateMachine *sm) {
     if (status == RESPONSE_OK || status == RESPONSE_NEGATIVE) {
         sm->last_activity = now;
     } else {
-        printf("ECU heartbeat failed - connection lost\n");
+        klog("ECU heartbeat failed - connection lost");
         sm->connected = false;
         sm->state = ECU_STATE_IDLE;
 
@@ -202,7 +216,7 @@ static void ecu_process_messages(ECUStateMachine *sm) {
 
             case MSG_DISCONNECT_ECU:
                 if (sm->connected) {
-                    printf("Disconnecting from ECU\n");
+                    klog("Disconnecting from ECU");
                     sm->connected = false;
                     sm->state = ECU_STATE_IDLE;
 
@@ -225,8 +239,8 @@ static void ecu_process_messages(ECUStateMachine *sm) {
                         ((uint32_t)msg.data[1] << 16) |
                         ((uint32_t)msg.data[2] << 8)  |
                         ((uint32_t)msg.data[3]);
-                    printf("K-line baud: %u -> %u\n",
-                           (unsigned)uart_get_baud(), (unsigned)baud);
+                    klog("K-line baud: %u -> %u",
+                         (unsigned)uart_get_baud(), (unsigned)baud);
                     uart_set_baud(baud);
                 }
                 break;
@@ -238,7 +252,7 @@ static void ecu_process_messages(ECUStateMachine *sm) {
                         ((uint32_t)msg.data[1] << 16) |
                         ((uint32_t)msg.data[2] << 8)  |
                         ((uint32_t)msg.data[3]);
-                    printf("Heartbeat interval set to %lu ms\n", sm->heartbeat_interval_ms);
+                    klog("Heartbeat interval set to %u ms", (unsigned)sm->heartbeat_interval_ms);
                 }
                 break;
 

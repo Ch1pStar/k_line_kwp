@@ -5,6 +5,7 @@
 #include "dashboard.h"
 #include "ecu_state_machine.h"
 #include "ring_buffer.h"
+#include "log.h"
 
 void core1_entry(void);
 
@@ -22,6 +23,10 @@ int main() {
 
     ringbuffer_init(&dash_to_ecu_buffer);
     ringbuffer_init(&ecu_to_dash_buffer);
+
+    // Core 0 logs through the same queue it sends responses on, so anything it
+    // prints before core 1 starts is simply queued and shown once core 1 runs.
+    klog_init(&ecu_to_dash_buffer);
 
     ecu_init(&ecu_sm, &dash_to_ecu_buffer, &ecu_to_dash_buffer);
 

@@ -1,5 +1,6 @@
 #include "kwp2000.h"
 #include "uart.h"
+#include "log.h"
 
 #include <stdio.h>
 #include <ctype.h>
@@ -47,11 +48,11 @@ static size_t send_packet(const KWP2000Packet *packet, bool silent) {
 
         uint32_t echo = uart_read_byte_timeout(100000);
         if (echo == UART_TIMEOUT) {
-            if (!silent) printf("Echo timeout at byte %u of %u\n",
-                                (unsigned)i, (unsigned)frame_len);
+            if (!silent) klog("Echo timeout at byte %u of %u",
+                              (unsigned)i, (unsigned)frame_len);
         } else if ((uint8_t)echo != frame[i]) {
-            if (!silent) printf("Echo mismatch at byte %u: sent %02X, read %02X\n",
-                                (unsigned)i, frame[i], (uint8_t)echo);
+            if (!silent) klog("Echo mismatch at byte %u: sent %02X, read %02X",
+                              (unsigned)i, frame[i], (uint8_t)echo);
         }
     }
 
@@ -68,11 +69,21 @@ size_t kwp2000_send(const KWP2000Service *service, bool silent) {
     packet.checksum = calculate_checksum(service);
 
     if (!silent) {
-        printf("KWP2000 Packet: Length=0x%02X, Service ID=0x%02X, Data=", packet.length, packet.serviceId);
-        for (size_t i = 0; i < service->dataLength; ++i) {
-            printf("0x%02X ", packet.dataBytes[i]);
+        // One line per frame: the log queue drops rather than blocks, so dense
+        // output survives a burst that a byte-at-a-time printf would not.
+        // Must start empty: a bare service like 0xB7 has no data bytes, and an
+        // uninitialised buffer printed whatever stack garbage was left there.
+        char data_hex[3 * 24 + 4] = "";
+        size_t n = 0;
+        for (size_t i = 0; i < service->dataLength && n + 4 < sizeof(data_hex); ++i) {
+            n += snprintf(data_hex + n, sizeof(data_hex) - n, "%s%02X",
+                          i ? " " : "", packet.dataBytes[i]);
         }
-        printf("Checksum=0x%02X\n", packet.checksum);
+        if (service->dataLength > 24) {
+            snprintf(data_hex + n, sizeof(data_hex) - n, "...");
+        }
+        klog("TX len=%02X SID=%02X data=[%s] csum=%02X",
+             packet.length, packet.serviceId, data_hex, packet.checksum);
     }
 
     // Echo is consumed inline by send_packet, so nothing is left for the reader
@@ -80,105 +91,142 @@ size_t kwp2000_send(const KWP2000Service *service, bool silent) {
     return send_packet(&packet, silent);
 }
 
+// One inter-byte timeout for every field of a response. P2max is 50ms for this
+// ECU; 100ms leaves margin without stalling the state machine for long.
+#define RESPONSE_TIMEOUT_US 100000
+
 ResponseStatus kwp2000_read_response(size_t echo_bytes, KWP2000Response *response, bool silent) {
     response->dataSize = 0;
+    response->serviceId = 0;
 
     // Skip echoed command bytes
     for (size_t i = 0; i < echo_bytes; ++i) {
-        uint32_t byte = uart_read_byte_timeout(100000);
+        uint32_t byte = uart_read_byte_timeout(RESPONSE_TIMEOUT_US);
         if (byte == UART_TIMEOUT) {
-            if (!silent) printf("Timeout while reading echo bytes\n");
+            if (!silent) klog("Timeout while reading echo bytes");
             return RESPONSE_ERROR;
         }
     }
 
-    // Read response length
-    uint32_t resp_len = uart_read_byte_timeout(100000);
-    if (resp_len == UART_TIMEOUT) {
-        if (!silent) printf("Timeout while reading response length\n");
+    // Header, per ISO 14230-2: Fmt [Tgt] [Src] [Len]. The format byte carries
+    // the length in bits 0-5 and the addressing mode in bits 6-7. Everything
+    // this ECU has ever sent uses mode 00 with a length that fits in 6 bits, so
+    // the old parser read the format byte as a plain length. That misreads any
+    // reply over 63 bytes (length field 0 => the count lives in a separate Len
+    // byte) and would walk straight through address bytes as if they were
+    // payload, desynchronising every following frame.
+    uint32_t byte = uart_read_byte_timeout(RESPONSE_TIMEOUT_US);
+    if (byte == UART_TIMEOUT) {
+        if (!silent) klog("Timeout while reading response format byte");
         return RESPONSE_ERROR;
     }
-    uint8_t response_length = (uint8_t)resp_len;
-    uint8_t checksum = response_length;
+    const uint8_t format = (uint8_t)byte;
+    uint8_t checksum = format;
 
-    // Read response status
-    uint32_t resp_status = uart_read_byte_timeout(100000);
-    if (resp_status == UART_TIMEOUT) {
-        if (!silent) printf("Timeout while reading response status\n");
-        return RESPONSE_ERROR;
-    }
-    uint8_t response_status = (uint8_t)resp_status;
-    checksum += response_status;
-
-    if (response_status == 0x7f) {
-        // Negative response: [len][7F][rejected SID][NRC][checksum]. Consume the
-        // rest of the frame so the next read stays in sync, keeping the payload
-        // (everything bar the trailing checksum) for the caller to inspect.
-        response->dataSize = 0;
-        for (size_t i = 0; i < response_length; ++i) {
-            uint32_t data_byte = uart_read_byte_timeout(100000);
-            if (data_byte == UART_TIMEOUT) {
-                if (!silent) printf("Timeout while reading negative response byte %zu\n", i);
-                return RESPONSE_ERROR;
-            }
-            if (i + 1 < response_length && response->dataSize < MAX_RESPONSE_SIZE) {
-                response->data[response->dataSize++] = (uint8_t)data_byte;
-            }
-        }
-
-        if (!silent) {
-            printf("Negative response: 7F");
-            for (size_t i = 0; i < response->dataSize; ++i) {
-                printf(" %02X", response->data[i]);
-            }
-            if (response->dataSize >= 2) {
-                printf("   (service 0x%02X rejected, NRC 0x%02X)",
-                       response->data[0], response->data[1]);
-            }
-            printf("\n");
-        }
-
-        // The ECU answered, so the link is up - this is a rejection, not a fault.
-        return RESPONSE_NEGATIVE;
-    } else {
-        if (!silent) {
-            printf("Response status: %02x, length: %02x\n", response_status, response_length);
-        }
-    }
-
-    // Read data bytes
-    for (size_t i = 0; i < response_length - 1; ++i) {
-        uint32_t data_byte = uart_read_byte_timeout(100000);
-        if (data_byte == UART_TIMEOUT) {
-            if (!silent) printf("Timeout while reading data byte %zu\n", i);
+    const uint8_t address_mode = format & 0xC0;
+    const size_t address_bytes = (address_mode == 0x80 || address_mode == 0xC0) ? 2 : 0;
+    for (size_t i = 0; i < address_bytes; ++i) {
+        byte = uart_read_byte_timeout(RESPONSE_TIMEOUT_US);
+        if (byte == UART_TIMEOUT) {
+            if (!silent) klog("Timeout while reading address byte %u", (unsigned)i);
             return RESPONSE_ERROR;
         }
-        if (i < MAX_RESPONSE_SIZE) {
-            checksum += (uint8_t)data_byte;
-            response->data[i] = (uint8_t)data_byte;
-            response->dataSize++;
+        checksum += (uint8_t)byte;
+    }
+    if (address_bytes && !silent) {
+        klog("Note: response carried address info (format %02X)", format);
+    }
+
+    size_t length = format & 0x3F;
+    if (length == 0) {
+        byte = uart_read_byte_timeout(RESPONSE_TIMEOUT_US);
+        if (byte == UART_TIMEOUT) {
+            if (!silent) klog("Timeout while reading extended length byte");
+            return RESPONSE_ERROR;
+        }
+        length = (uint8_t)byte;
+        checksum += (uint8_t)byte;
+    }
+
+    // Length counts the service id plus its data. Zero means there is no
+    // service id at all - a malformed frame, and the value that used to
+    // underflow the data loop into reading SIZE_MAX bytes.
+    if (length == 0) {
+        if (!silent) klog("Malformed response: zero length");
+        return RESPONSE_ERROR;
+    }
+
+    byte = uart_read_byte_timeout(RESPONSE_TIMEOUT_US);
+    if (byte == UART_TIMEOUT) {
+        if (!silent) klog("Timeout while reading response service id");
+        return RESPONSE_ERROR;
+    }
+    response->serviceId = (uint8_t)byte;
+    checksum += response->serviceId;
+
+    // Read the payload. On overflow keep consuming the frame instead of
+    // returning early: the unread bytes would otherwise still be on the wire,
+    // and every subsequent response would be parsed one frame behind.
+    bool overflow = false;
+    for (size_t i = 0; i + 1 < length; ++i) {
+        byte = uart_read_byte_timeout(RESPONSE_TIMEOUT_US);
+        if (byte == UART_TIMEOUT) {
+            if (!silent) klog("Timeout while reading data byte %u", (unsigned)i);
+            return RESPONSE_ERROR;
+        }
+        checksum += (uint8_t)byte;
+        if (response->dataSize < MAX_RESPONSE_SIZE) {
+            response->data[response->dataSize++] = (uint8_t)byte;
         } else {
-            return RESPONSE_OVERFLOW;
+            overflow = true;
         }
     }
 
-    // Read and validate checksum
-    uint32_t recv_checksum = uart_read_byte_timeout(100000);
+    uint32_t recv_checksum = uart_read_byte_timeout(RESPONSE_TIMEOUT_US);
     if (recv_checksum == UART_TIMEOUT) {
-        if (!silent) printf("Timeout while reading checksum\n");
+        if (!silent) klog("Timeout while reading checksum");
         return RESPONSE_ERROR;
     }
+    const bool checksum_ok = (checksum == (uint8_t)recv_checksum);
 
-    if (checksum == (uint8_t)recv_checksum) {
-        if (!silent) printf("Response checksum valid.\n");
-        return RESPONSE_OK;
-    } else {
+    if (response->serviceId == 0x7F) {
+        // Negative response: [Fmt][7F][rejected SID][NRC][checksum]. The ECU
+        // answered, so the link is up - this is a rejection, not a fault.
         if (!silent) {
-            printf("Response checksum invalid. Calculated: %02x, Received: %02x\n",
-                   checksum, (uint8_t)recv_checksum);
+            if (response->dataSize >= 2) {
+                klog("Negative response: 7F %02X %02X - service 0x%02X rejected, NRC 0x%02X",
+                     response->data[0], response->data[1],
+                     response->data[0], response->data[1]);
+            } else {
+                klog("Negative response: 7F (%u payload bytes)", (unsigned)response->dataSize);
+            }
+            if (!checksum_ok) {
+                klog("  (checksum mismatch on negative response: calc %02X, recv %02X)",
+                     checksum, (uint8_t)recv_checksum);
+            }
+        }
+        return RESPONSE_NEGATIVE;
+    }
+
+    if (!silent) {
+        klog("Response SID %02X, length %u", response->serviceId, (unsigned)length);
+    }
+
+    if (overflow) {
+        if (!silent) klog("Response overflowed %u byte buffer (frame drained)",
+                          (unsigned)MAX_RESPONSE_SIZE);
+        return RESPONSE_OVERFLOW;
+    }
+
+    if (!checksum_ok) {
+        if (!silent) {
+            klog("Response checksum invalid. Calculated: %02X, Received: %02X",
+                 checksum, (uint8_t)recv_checksum);
         }
         return RESPONSE_CHECKSUM_INVALID;
     }
+
+    return RESPONSE_OK;
 }
 
 ResponseStatus kwp2000_execute(const KWP2000Service *service, KWP2000Response *response, bool silent) {
@@ -188,28 +236,27 @@ ResponseStatus kwp2000_execute(const KWP2000Service *service, KWP2000Response *r
 }
 
 void kwp2000_print_response(const KWP2000Response *response) {
-    printf("Response Data (size: %zu): ", response->dataSize);
-    for (size_t i = 0; i < response->dataSize; ++i) {
-        printf("%02X ", response->data[i]);
+    char hex[3 * 24 + 4] = "";
+    size_t n = 0;
+    for (size_t i = 0; i < response->dataSize && n + 4 < sizeof(hex); ++i) {
+        n += snprintf(hex + n, sizeof(hex) - n, "%s%02X", i ? " " : "", response->data[i]);
     }
-    printf("\n");
+    klog("Response data (%u): [%s]", (unsigned)response->dataSize, hex);
 }
 
 void kwp2000_print_str_response(const KWP2000Response *response) {
-    printf("Response String: \"");
-    for (size_t i = 0; i < response->dataSize; ++i) {
-        if (isprint(response->data[i])) {
-            putchar(response->data[i]);
-        } else {
-            putchar('.');
-        }
+    char text[64];
+    size_t n = 0;
+    for (size_t i = 0; i < response->dataSize && n + 1 < sizeof(text); ++i) {
+        text[n++] = isprint(response->data[i]) ? (char)response->data[i] : '.';
     }
-    printf("\"\n");
+    text[n] = '\0';
+    klog("Response string: \"%s\"", text);
 }
 
 uint8_t kwp2000_parse_dtcs(const KWP2000Response *response, DTCData *dtc_array, size_t dtc_array_size) {
     if (response->dataSize < 1) {
-        printf("DTC response too short (%zu bytes)\n", response->dataSize);
+        klog("DTC response too short (%u bytes)", (unsigned)response->dataSize);
         return 0;
     }
 
@@ -224,8 +271,8 @@ uint8_t kwp2000_parse_dtcs(const KWP2000Response *response, DTCData *dtc_array, 
     // Don't trust the count blindly - a truncated or odd-length reply would
     // otherwise walk off the end of response->data.
     if (count != reported) {
-        printf("DTC count mismatch: ECU reported %u, %zu usable in %zu response bytes\n",
-               reported, count, response->dataSize);
+        klog("DTC count mismatch: ECU reported %u, %u usable in %u response bytes",
+             reported, (unsigned)count, (unsigned)response->dataSize);
     }
 
     for (size_t i = 0; i < count; i++) {
@@ -238,29 +285,24 @@ uint8_t kwp2000_parse_dtcs(const KWP2000Response *response, DTCData *dtc_array, 
     return (uint8_t)count;
 }
 
-static void print_dtc_status(uint8_t status) {
-    printf("      symptom : ");
+static const char *dtc_symptom(uint8_t status) {
     switch (status & 0x0F) {
-        case 0x00: printf("no fault symptom available"); break;
-        case 0x01: printf("above maximum threshold"); break;
-        case 0x02: printf("below minimum threshold"); break;
-        case 0x04: printf("no signal"); break;
-        case 0x08: printf("invalid signal"); break;
-        default:   printf("unknown (0x%X)", status & 0x0F); break;
+        case 0x00: return "no symptom";
+        case 0x01: return "above max threshold";
+        case 0x02: return "below min threshold";
+        case 0x04: return "no signal";
+        case 0x08: return "invalid signal";
+        default:   return "unknown symptom";
     }
-    printf("\n");
+}
 
-    printf("      state   : ");
+static const char *dtc_state(uint8_t status) {
     switch (status & 0x60) {
-        case 0x00: printf("not detected or stored"); break;
-        case 0x20: printf("stored, not present now (history/intermittent)"); break;
-        case 0x40: printf("maturing - insufficient data to store"); break;
-        default:   printf("present now and stored (ACTIVE)"); break;
+        case 0x00: return "not detected/stored";
+        case 0x20: return "stored, not present (history)";
+        case 0x40: return "maturing";
+        default:   return "ACTIVE (present + stored)";
     }
-    printf("\n");
-
-    printf("      test    : %s\n", (status & 0x10) ? "not complete" : "complete / not applicable");
-    printf("      MIL     : %s\n", (status & 0x80) ? "on" : "off");
 }
 
 typedef struct {
@@ -406,13 +448,16 @@ static void convert_dtc_to_readable(uint8_t high_byte, uint8_t low_byte, char *d
     sprintf(dtc_string, "%c%02X%02X", first_letter, high_byte & 0x3F, low_byte);
 }
 
+// Two log lines per fault rather than the eight this used to print: the log
+// queue drops when full, and a six-fault bench dump at eight lines each was
+// enough of a burst to lose the tail of its own output.
 void kwp2000_print_dtcs(DTCData *dtcs, size_t num_dtcs) {
     if (num_dtcs == 0) {
-        printf("\n=== No fault codes stored ===\n\n");
+        klog("=== No fault codes stored ===");
         return;
     }
 
-    printf("\n=== %zu fault code%s ===\n", num_dtcs, num_dtcs == 1 ? "" : "s");
+    klog("=== %u fault code%s ===", (unsigned)num_dtcs, num_dtcs == 1 ? "" : "s");
 
     for (size_t i = 0; i < num_dtcs; ++i) {
         char code_string[6];
@@ -421,15 +466,17 @@ void kwp2000_print_dtcs(DTCData *dtcs, size_t num_dtcs) {
 
         const char *description = dtc_lookup(raw);
         if (description != NULL) {
-            printf("\n  [%zu] %s  %s\n", i + 1, code_string, description);
+            klog("  [%u] %s  %s", (unsigned)(i + 1), code_string, description);
         } else {
             // Say plainly that we have no entry rather than inventing one.
-            printf("\n  [%zu] %s  <no description - %s>\n",
-                   i + 1, code_string, dtc_subsystem(raw));
+            klog("  [%u] %s  <no description - %s>",
+                 (unsigned)(i + 1), code_string, dtc_subsystem(raw));
         }
 
-        printf("      raw 0x%04X | status 0x%02X\n", raw, dtcs[i].status);
-        print_dtc_status(dtcs[i].status);
+        klog("      raw %04X status %02X | %s | %s | test %s | MIL %s",
+             raw, dtcs[i].status,
+             dtc_state(dtcs[i].status), dtc_symptom(dtcs[i].status),
+             (dtcs[i].status & 0x10) ? "incomplete" : "complete",
+             (dtcs[i].status & 0x80) ? "on" : "off");
     }
-    printf("\n");
 }

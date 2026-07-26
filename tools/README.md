@@ -8,10 +8,12 @@ Claude (or you) can drive the board without leaving WSL.
 
 ```bash
 cd /mnt/c && powershell.exe -NoProfile -ExecutionPolicy Bypass \
-  -File '\\wsl.localhost\Debian\<abs-path>\tools\ecu.ps1' \
+  -File 'C:\projects\side-projects\k_line_kwp\tools\ecu.ps1' \
   -Port COM5 -Commands 'connect;start-logging;read-log;read-log' -Settle 25
 ```
 
+- Pass the **Windows** path to `-File`. This repo lives on `/mnt/c`, i.e. `C:\projects\...`;
+  `\\wsl.localhost\Debian\...` only applies to a WSL-native checkout and fails here.
 - `-Commands` is a **semicolon-separated** list (not a PS array — `-File` flattens arrays).
 - Drains until the line is idle (~2.8s of silence) or `-Settle` seconds elapse. The
   2.8s idle floor is deliberate: 5-baud `connect` has a ~2.4s silent stretch and a
@@ -23,7 +25,7 @@ cd /mnt/c && powershell.exe -NoProfile -ExecutionPolicy Bypass \
 
 ```bash
 cd /mnt/c && powershell.exe -NoProfile -ExecutionPolicy Bypass \
-  -File '\\wsl.localhost\Debian\<abs-path>\tools\flash.ps1' -Port COM5
+  -File 'C:\projects\side-projects\k_line_kwp\tools\flash.ps1' -Port COM5
 ```
 
 Touches the port at 1200 baud to drop the Pico into BOOTSEL, copies

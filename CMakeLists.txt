@@ -54,6 +54,7 @@ if (TARGET tinyusb_device)
         src/uart.c
         src/kline.c
         src/kwp2000.c
+        src/log.c
         src/main.c
         src/ring_buffer.c
         src/dashboard.c
