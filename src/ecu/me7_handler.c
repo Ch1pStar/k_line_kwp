@@ -187,13 +187,32 @@ bool me7_handler_install(void) {
         }
     }
 
-    // 2. Write the handler to RAM. Must happen before the redirect, while 0x3D
+    // 2. Zero the inter-message timing. This is worth more than everything else
+    //    here put together: it takes sampling from ~20/s to ~45/s at 10400 baud
+    //    with an unchanged payload, because the ISO 14230 defaults (P2min 25ms
+    //    before the ECU answers, P3min 55ms before we may ask again) otherwise
+    //    dominate the budget.
+    //
+    //    Position is not negotiable. It must come *after* the diagnostic session
+    //    (StartDiagnosticSession resets timing to defaults, which is why sending
+    //    it earlier appeared to do nothing) and *before* the redirect (the
+    //    handler's service table has no 0x83, so afterwards it answers SNS).
+    //
+    //    Payload: subfunction 03 = set values, then P2min=0, P2max=25ms,
+    //    P3min=0, P3max=5000ms, P4min=0 - the same bytes ME7Logger sends.
+    //    Not fatal if refused; the session simply stays slow.
+    {
+        const uint8_t frame[] = {0x83, 0x03, 0x00, 0x01, 0x00, 0x14, 0x00};
+        step("timing parameters (P2min/P3min -> 0)", frame, sizeof(frame), EXPECT_POSITIVE);
+    }
+
+    // 3. Write the handler to RAM. Must happen before the redirect, while 0x3D
     //    still routes through the ECU's original dispatcher.
     if (!me7_handler_load()) {
         return false;
     }
 
-    // 3. Repoint the service-table pointer at 0xE228 to our table. Bytes
+    // 4. Repoint the service-table pointer at 0xE228 to our table. Bytes
     //    00 3A E1 00 are the C166 far-pointer encoding of 0x387A00 - kept as a
     //    literal because that encoding is not a plain function of the address.
     //    Without this step the ECU keeps using its BootRom table and the
@@ -206,7 +225,7 @@ bool me7_handler_install(void) {
         }
     }
 
-    // 4. The first call after the redirect makes the handler copy the original
+    // 5. The first call after the redirect makes the handler copy the original
     //    service table into its own. It rejects this 0x3E itself while doing
     //    so - a rejection here is the expected outcome, not a failure.
     {
@@ -214,7 +233,7 @@ bool me7_handler_install(void) {
         step("init trigger (3E, rejection expected)", frame, sizeof(frame), EXPECT_ANY_REPLY);
     }
 
-    // 5. Hand over the variable list. After this a bare 0xB7 returns the packed
+    // 6. Hand over the variable list. After this a bare 0xB7 returns the packed
     //    values.
     if (!step("set log variables (B7 + list)",
               var_frame, var_frame_length, EXPECT_POSITIVE)) {

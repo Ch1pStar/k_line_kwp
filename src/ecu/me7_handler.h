@@ -4,7 +4,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ME7_MAX_LOG_VARS 16
+// The ECU itself allows far more (ME7Logger documents 254 bytes / 127
+// locations); this is only what our message slot and sample budget allow.
+#define ME7_MAX_LOG_VARS 32
 #define ME7_ADDRESS_BYTES 3
 
 // Injection of the ME7.5 fast-logging RAM handler (handler_setzi.bin).

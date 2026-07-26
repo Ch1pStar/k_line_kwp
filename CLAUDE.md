@@ -294,8 +294,41 @@ Fast logging had never worked reliably. The blocking bugs, in order of impact:
    Pico (looked like an ECU failure). Now loaded once.
 7. **"ECU crashes" were usually session timeouts**: with the heartbeat parked, the KWP
    session dropped in the gaps between test commands. Reframed as a keepalive problem, not
-   ECU instability. `setTimingParams` (`83030001001400`) genuinely does wedge the session
-   though — do not send it.
+   ECU instability. **The claim that `setTimingParams` (`83030001001400`) wedges the
+   session was also wrong** — see below; it is now sent on every install and is the
+   single biggest win in this project's sampling rate.
+
+## Sample Rate: send the timing parameters
+
+**AccessTimingParameter (0x83) is worth more than everything else combined.** ISO 14230
+defaults are P2min 25ms (before the ECU answers) and P3min 55ms (before the tester may ask
+again); those dominate the budget entirely. Zeroing them takes a 5-byte sample from
+**20.6 to 49.8 samples/s** with nothing else changed.
+
+Frame: `83 03 00 01 00 14 00` — subfunction `03` = set values, then P2min=0, P2max=25ms,
+P3min=0, P3max=5000ms, P4min=0. Exactly what ME7Logger sends, and what the real capture in
+`me7log/ecu_files/many_logs.txt` opens every session with.
+
+**Position in the sequence is not negotiable:**
+
+- **After** `10 86`. StartDiagnosticSession resets timing to defaults, so sending 0x83
+  first and then opening the session silently undoes it — which is exactly what made it
+  look useless the first time it was tried here.
+- **Before** the `0xE228` redirect. The handler's service table has no 0x83, so afterwards
+  it answers `7F 83 11`.
+
+Measured on the bench, all at 10400 baud with timing parameters set:
+
+| Sample | Variables | Rate | Period |
+|--------|-----------|------|--------|
+| 5 bytes | 5 | 49.8/s | 20ms |
+| 10 bytes | 8 | 45.4/s | 22ms |
+| 28 bytes | 20 | 24.9/s | 40ms |
+
+Above ~10 bytes the marginal cost is ~1ms per byte, which is simply the 10400 baud wire
+time (0.96ms/byte), on top of ~6ms of fixed overhead. **The next lever is baud rate**:
+ME7Logger defaults to 56000 and its docs quote up to 50 samples/s. At 56000 the same
+28-byte sample would be bounded by ~12ms, i.e. ~80/s. Nothing has switched baud yet.
 
 ## Logging Variable Format
 
