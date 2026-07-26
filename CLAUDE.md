@@ -40,7 +40,8 @@ src/
     kwp2000.c / .h          - Packet framing, checksum, send/receive, DTC parsing
   ecu/
     ecu_state_machine.c / .h - Core 0 state machine (IDLE -> CONNECTING -> CONNECTED)
-    me7_handler.c / .h      - Handler injection sequence (core 0, ECU-paced)
+    me7_handler.c / .h      - Handler injection sequence + logged variable list
+    logger.c / .h           - Free-running sampler (core 0)
   host/
     command.c / .h          - Frontend-agnostic command layer (CommandId -> messages)
     console.c / .h          - Core 1 USB text console; parses text into Commands
@@ -108,7 +109,10 @@ clear-dtcs               - Clear fault codes (SID 0x14, params 0xFF 0x00)
 diag-session             - Start diagnostic session (SID 0x10, param 0x86)
 load-handler             - Write handler_setzi.bin to ECU RAM at 0x387A00
 start-logging            - Full fast-logging setup: heartbeat, load, redirect, init, set vars
-read-log                 - Sample the logged variables (bare 0xB7 -> 0xF7)
+read-log                 - Sample the logged variables once (bare 0xB7 -> 0xF7)
+stream-on[:MS]           - Start free-running sampling (default 100ms, 0 = full rate)
+stream-off               - Stop free-running sampling
+set-vars:HEX             - Replace the logged variable list (3-byte addresses)
 cmd:XXXX                 - Send raw hex KWP2000 command (e.g., cmd:1A9B for ECU ID)
 raw:XXXX                 - Same as cmd: but dumps the unparsed reply bytes (debugging)
 heartbeat:MS             - Set keep-alive interval in ms (use ~2000 during logging)
@@ -133,6 +137,26 @@ the TX-pin bug below — connect only ever worked once per Pico boot, so any rec
 attempt failed and the ECU looked dead. Verified by recovering a wedged handler state with
 the ECU continuously powered on its bench supply (a `DEADBEEF` written to `0x387800`
 before the recovery was still there afterwards, proving its RAM was never cleared).
+
+## Free-Running Sampler (`ecu/logger.c`)
+
+`stream-on` starts core 0 issuing bare 0xB7 reads at its own pace and pushing each result
+as `MSG_SAMPLE` — the host consumes what arrives instead of asking per sample, which is
+what keeps the rate independent of host latency. Sample traffic doubles as the keep-alive,
+so the heartbeat only fires when sampling is slower than the heartbeat interval or stopped.
+
+**Measured on the bench (10400 baud, 5 variables):** ~20.6 samples/s at full rate, ~48ms
+per sample. Only ~11ms of that is wire time; the rest is the ECU's own P2 turnaround, so a
+faster K-line rate buys less than it looks like it should. `stream-on:200` holds a metronomic
+200ms and reports rate on stop.
+
+**Auto-recovery.** A handler that has lost its redirect answers 0xB7 with SNS (`7F B7 11`).
+The logger recognises that signature and reinstalls, bounded to 3 attempts; if reinstalling
+does not fix it, it asks the state machine for a fresh session (reconnect + reinstall) and
+gives up cleanly if that fails too. Reinstalling here is safe precisely *because* 0xB7
+returned SNS — the redirect is gone, so writes route through the ECU's own dispatcher (see
+the reinstall hazard above). Verified by restoring the BootRom pointer mid-stream: sampling
+resumed after a 4.4s gap with unbroken sequence numbers.
 
 ## KWP2000 Services Used
 
@@ -250,6 +274,10 @@ MSG_SET_BAUD         = 0x0B  // Change K-line bit rate (4 bytes, big-endian)
 MSG_LOG              = 0x0C  // Text line from core0 for core1 to print
 MSG_INSTALL_HANDLER  = 0x0D  // Run the full injection sequence on core0
 MSG_LOAD_HANDLER     = 0x0E  // Write the handler blob only
+MSG_SAMPLE           = 0x0F  // [seq:2 BE][t_ms:4 BE][raw values] from the logger
+MSG_START_STREAM     = 0x10  // 4 bytes BE sample interval in ms (0 = full rate)
+MSG_STOP_STREAM      = 0x11
+MSG_SET_LOG_VARS     = 0x12  // Flat list of 3-byte ECU addresses
 ```
 
 ## ResponseStatus (kwp2000.h)

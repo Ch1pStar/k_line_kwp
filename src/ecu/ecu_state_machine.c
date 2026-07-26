@@ -3,6 +3,7 @@
 #include "kline.h"
 #include "kwp2000.h"
 #include "me7_handler.h"
+#include "logger.h"
 #include "log.h"
 
 #include <stdio.h>
@@ -12,8 +13,9 @@
 
 #define DEFAULT_HEARTBEAT_INTERVAL_MS 5000
 
-// Once the handler is installed the session must not be allowed to lapse: a
-// drop after the redirect needs an ECU power cycle to recover.
+// Once the handler is installed, keep the session short-lived enough that it
+// never lapses. Recovering from a drop costs a reconnect and a reinstall, which
+// the logger can now do by itself, but sampling stops while it happens.
 #define LOGGING_HEARTBEAT_INTERVAL_MS 2000
 
 void ecu_init(ECUStateMachine *sm, RingBuffer *rx, RingBuffer *tx) {
@@ -23,6 +25,8 @@ void ecu_init(ECUStateMachine *sm, RingBuffer *rx, RingBuffer *tx) {
     sm->heartbeat_interval_ms = DEFAULT_HEARTBEAT_INTERVAL_MS;
     sm->rx_buffer = rx;
     sm->tx_buffer = tx;
+
+    logger_init(tx);
 
     // Initialize PIO RX and TX pin for K-Line
     uart_pio_init_rx();
@@ -275,6 +279,37 @@ static void ecu_process_messages(ECUStateMachine *sm) {
                 }
                 break;
 
+            case MSG_START_STREAM:
+                if (!sm->connected) {
+                    klog("Cannot start streaming - ECU not connected");
+                    BufferMessage nack = {
+                        .messageType = MSG_NACK, .length = 1, .data = {0xFF}
+                    };
+                    ringbuffer_push(sm->tx_buffer, &nack);
+                    break;
+                }
+                logger_start(msg.length >= 4
+                                 ? ((uint32_t)msg.data[0] << 24) |
+                                   ((uint32_t)msg.data[1] << 16) |
+                                   ((uint32_t)msg.data[2] << 8)  |
+                                   ((uint32_t)msg.data[3])
+                                 : 0);
+                break;
+
+            case MSG_STOP_STREAM:
+                logger_stop("requested");
+                break;
+
+            case MSG_SET_LOG_VARS:
+                if (!sm->connected) {
+                    klog("Cannot set variables - ECU not connected");
+                    break;
+                }
+                if (me7_handler_set_vars(msg.data, msg.length)) {
+                    sm->last_activity = to_ms_since_boot(get_absolute_time());
+                }
+                break;
+
             case MSG_SET_BAUD:
                 if (msg.length >= 4) {
                     uint32_t baud =
@@ -305,7 +340,40 @@ static void ecu_process_messages(ECUStateMachine *sm) {
     }
 }
 
+// The logger owns sampling but not the link, so when the handler cannot be
+// reinstalled it asks for a reconnect and this is where that happens.
+static void ecu_run_logger(ECUStateMachine *sm) {
+    switch (logger_update(sm->connected)) {
+        case LOGGER_TICK_SAMPLED:
+            // Sample traffic is what keeps the session alive while streaming.
+            sm->last_activity = to_ms_since_boot(get_absolute_time());
+            break;
+
+        case LOGGER_TICK_NEEDS_RECONNECT: {
+            klog("logger: recovering the handler through a fresh session");
+            sm->connected = false;
+            sm->state = ECU_STATE_IDLE;
+
+            // The ECU ignores a 5-baud init while it still believes a session
+            // is open, so let its P3max (~3-5s) lapse first.
+            sleep_ms(4000);
+
+            if (ecu_try_connect(sm) && me7_handler_install()) {
+                sm->last_activity = to_ms_since_boot(get_absolute_time());
+                klog("logger: recovered, resuming");
+            } else {
+                logger_stop("reconnect recovery failed");
+            }
+            break;
+        }
+
+        case LOGGER_TICK_IDLE:
+            break;
+    }
+}
+
 void ecu_update(ECUStateMachine *sm) {
     ecu_check_connection(sm);
     ecu_process_messages(sm);
+    ecu_run_logger(sm);
 }

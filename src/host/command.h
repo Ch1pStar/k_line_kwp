@@ -23,6 +23,9 @@ typedef enum {
     CMD_LOAD_HANDLER,            // write the handler blob to ECU RAM
     CMD_START_LOGGING,           // full injection sequence
     CMD_READ_LOG,                // bare 0xB7 sample
+    CMD_STREAM_START,            // value = sample interval in ms (0 = full rate)
+    CMD_STREAM_STOP,
+    CMD_SET_LOG_VARS,            // payload = flat list of 3-byte ECU addresses
     CMD_RAW_KWP,                 // payload = KWP frame, reply parsed normally
     CMD_RAW_DUMP,                // payload = KWP frame, reply dumped verbatim
     CMD_SET_HEARTBEAT,           // value = interval in ms

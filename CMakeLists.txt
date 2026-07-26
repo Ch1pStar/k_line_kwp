@@ -48,6 +48,7 @@ if (TARGET tinyusb_device)
         src/kline/kwp2000.c
         src/ecu/ecu_state_machine.c
         src/ecu/me7_handler.c
+        src/ecu/logger.c
         src/host/command.c
         src/host/console.c
         src/ipc/ring_buffer.c

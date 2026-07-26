@@ -9,6 +9,9 @@
 
 // --- text -> Command ------------------------------------------------------
 
+// Bare "stream-on" rate. Full rate floods a USB console at ~85 samples/s.
+#define DEFAULT_STREAM_INTERVAL_MS 100
+
 static void print_help(void) {
     printf("\n--- Available Commands ---\n");
     printf("connect          - Connect to ECU\n");
@@ -19,7 +22,10 @@ static void print_help(void) {
     printf("diag-session     - Start special diagnostic session\n");
     printf("load-handler     - Load handler into ECU\n");
     printf("start-logging    - Inject handler + set up fast logging (do after connect)\n");
-    printf("read-log         - Sample the logged variables (bare 0xB7)\n");
+    printf("read-log         - Sample the logged variables once (bare 0xB7)\n");
+    printf("stream-on[:MS]   - Start free-running sampling (default 100ms, 0 = full rate)\n");
+    printf("stream-off       - Stop free-running sampling\n");
+    printf("set-vars:HEX     - Set logged variables (3-byte addresses, e.g. 00F89A380A32)\n");
     printf("cmd:XXXX         - Send raw KWP2000 command (hex)\n");
     printf("raw:XXXX         - Same, but dump the unparsed reply bytes\n");
     printf("heartbeat:MS     - Set keep-alive interval in ms\n");
@@ -43,6 +49,7 @@ static const CommandName command_names[] = {
     {"load-handler",           CMD_LOAD_HANDLER},
     {"start-logging",          CMD_START_LOGGING},
     {"read-log",               CMD_READ_LOG},
+    {"stream-off",             CMD_STREAM_STOP},
 };
 
 // Parse "cmd:1A9B" / "raw:1A9B" into a frame payload.
@@ -94,6 +101,26 @@ static bool parse_command(const char *text, Command *out) {
             printf("%02X ", out->payload[i]);
         }
         printf("\n");
+        return true;
+    }
+
+    // "stream-on" / "stream-on:20". Bare form picks a rate that is readable on
+    // a console rather than the fastest possible - ask for 0 explicitly.
+    if (strcmp(text, "stream-on") == 0 || strncmp(text, "stream-on:", 10) == 0) {
+        out->id = CMD_STREAM_START;
+        out->value = (text[9] == ':') ? (uint32_t)strtoul(text + 10, NULL, 10)
+                                      : DEFAULT_STREAM_INTERVAL_MS;
+        return true;
+    }
+
+    if (strncmp(text, "set-vars:", 9) == 0) {
+        out->id = CMD_SET_LOG_VARS;
+        if (!parse_hex_command(text + 9, out)) return false;
+        if (out->payload_length % 3 != 0) {
+            printf("Error: variable list must be whole 3-byte addresses\n");
+            return false;
+        }
+        printf("Setting %u logged variable(s)\n", out->payload_length / 3);
         return true;
     }
 
@@ -183,6 +210,21 @@ static void process_ecu_messages(Console *console) {
                 }
                 printf("\"\n");
                 break;
+
+            case MSG_SAMPLE: {
+                if (msg.length < 6) break;
+                const uint16_t seq = ((uint16_t)msg.data[0] << 8) | msg.data[1];
+                const uint32_t t_ms = ((uint32_t)msg.data[2] << 24) |
+                                      ((uint32_t)msg.data[3] << 16) |
+                                      ((uint32_t)msg.data[4] << 8)  |
+                                      ((uint32_t)msg.data[5]);
+                printf("S %5u %8u ms |", seq, (unsigned)t_ms);
+                for (size_t i = 6; i < msg.length; i++) {
+                    printf(" %02X", msg.data[i]);
+                }
+                printf("\n");
+                break;
+            }
 
             case MSG_ECU_DISCONNECTED:
                 printf("ECU disconnected\n");

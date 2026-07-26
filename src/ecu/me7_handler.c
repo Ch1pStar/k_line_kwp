@@ -115,11 +115,18 @@ bool me7_handler_load(void) {
 }
 
 // The 0xB7 "set logging variables" request: SID then a leading format byte
-// (0x03, still under investigation) then one 3-byte big-endian address per
-// variable, where bit 0x40 of the first byte marks a 2-byte variable. These map
-// to nmot, ub, wped, plsol, tmot on the 8N0906018BP ECU (see
-// me7log/ecu_files/8N0906018BP 0002.ecu for scaling). Positive response is 0xF7.
-static const uint8_t set_log_vars_frame[] = {
+// (0x03, still under investigation - it is constant across every var-list
+// length in me7log, so it is not a count) then one 3-byte big-endian address
+// per variable, where bit 0x40 of the first byte marks a 2-byte variable.
+//
+// The default set maps to nmot, ub, wped, plsol, tmot on the 8N0906018BP ECU
+// (see me7log/ecu_files/8N0906018BP 0002.ecu for scaling). It is only a
+// fallback: the host owns this list and replaces it with me7_handler_set_vars,
+// because the host is the side that has the .ecu file. Positive response 0xF7.
+#define VAR_FRAME_HEADER 2
+#define MAX_VAR_FRAME (VAR_FRAME_HEADER + ME7_ADDRESS_BYTES * ME7_MAX_LOG_VARS)
+
+static uint8_t var_frame[MAX_VAR_FRAME] = {
     0xB7,
     0x03,
     0x00, 0xF8, 0x9A,   // nmot  - engine speed
@@ -128,6 +135,46 @@ static const uint8_t set_log_vars_frame[] = {
     0x38, 0x09, 0xF6,   // plsol - target boost
     0x38, 0x0A, 0x32,   // tmot  - coolant temp
 };
+static size_t var_frame_length = VAR_FRAME_HEADER + 5 * ME7_ADDRESS_BYTES;
+
+size_t me7_handler_var_count(void) {
+    return (var_frame_length - VAR_FRAME_HEADER) / ME7_ADDRESS_BYTES;
+}
+
+// Derived from the list on every call rather than cached: one less piece of
+// state that can disagree with the frame actually sent to the ECU.
+size_t me7_handler_sample_size(void) {
+    size_t size = 0;
+    for (size_t i = VAR_FRAME_HEADER; i + ME7_ADDRESS_BYTES <= var_frame_length;
+         i += ME7_ADDRESS_BYTES) {
+        size += (var_frame[i] & 0x40) ? 2 : 1;
+    }
+    return size;
+}
+
+bool me7_handler_set_vars(const uint8_t *addresses, size_t address_bytes) {
+    if (address_bytes == 0 || address_bytes % ME7_ADDRESS_BYTES != 0) {
+        klog("me7: variable list must be whole 3-byte addresses (got %u)",
+             (unsigned)address_bytes);
+        return false;
+    }
+    if (address_bytes > ME7_ADDRESS_BYTES * ME7_MAX_LOG_VARS) {
+        klog("me7: %u variables requested, max %u",
+             (unsigned)(address_bytes / ME7_ADDRESS_BYTES), (unsigned)ME7_MAX_LOG_VARS);
+        return false;
+    }
+
+    var_frame[0] = 0xB7;
+    var_frame[1] = 0x03;
+    memcpy(&var_frame[VAR_FRAME_HEADER], addresses, address_bytes);
+    var_frame_length = VAR_FRAME_HEADER + address_bytes;
+
+    const bool ok = step("set log variables (B7 + list)",
+                         var_frame, var_frame_length, EXPECT_POSITIVE);
+    klog("me7: %u variable(s), %u byte sample",
+         (unsigned)me7_handler_var_count(), (unsigned)me7_handler_sample_size());
+    return ok;
+}
 
 bool me7_handler_install(void) {
     klog("me7: installing fast-logging handler");
@@ -170,10 +217,11 @@ bool me7_handler_install(void) {
     // 5. Hand over the variable list. After this a bare 0xB7 returns the packed
     //    values.
     if (!step("set log variables (B7 + list)",
-              set_log_vars_frame, sizeof(set_log_vars_frame), EXPECT_POSITIVE)) {
+              var_frame, var_frame_length, EXPECT_POSITIVE)) {
         return false;
     }
 
-    klog("me7: handler ready - sample with read-log");
+    klog("me7: handler ready - %u variable(s), %u byte sample",
+         (unsigned)me7_handler_var_count(), (unsigned)me7_handler_sample_size());
     return true;
 }

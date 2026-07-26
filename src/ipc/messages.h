@@ -24,4 +24,12 @@ typedef enum {
     MSG_LOG                 = 0x0C,  // core0 -> core1: text line to print
     MSG_INSTALL_HANDLER     = 0x0D,  // core1 -> core0: run the full injection
     MSG_LOAD_HANDLER        = 0x0E,  // core1 -> core0: write the blob only
+
+    // core0 -> core1: one sample from the free-running logger.
+    // Payload: [seq:2 BE][timestamp_ms:4 BE][raw variable bytes]
+    MSG_SAMPLE              = 0x0F,
+
+    MSG_START_STREAM        = 0x10,  // core1 -> core0: 4 bytes BE interval ms
+    MSG_STOP_STREAM         = 0x11,  // core1 -> core0
+    MSG_SET_LOG_VARS        = 0x12,  // core1 -> core0: flat 3-byte addresses
 } MessageType;

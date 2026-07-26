@@ -80,6 +80,21 @@ CommandStatus command_execute(const Command *cmd) {
             return queue_kwp(d, sizeof(d));
         }
 
+        case CMD_STREAM_START:
+            return queue_u32(MSG_START_STREAM, cmd->value);
+
+        case CMD_STREAM_STOP:
+            return queue_bare(MSG_STOP_STREAM);
+
+        case CMD_SET_LOG_VARS: {
+            BufferMessage msg = {
+                .messageType = MSG_SET_LOG_VARS,
+                .length = cmd->payload_length,
+            };
+            memcpy(msg.data, cmd->payload, cmd->payload_length);
+            return queue(&msg);
+        }
+
         case CMD_RAW_KWP:
             return queue_kwp(cmd->payload, cmd->payload_length);
 
