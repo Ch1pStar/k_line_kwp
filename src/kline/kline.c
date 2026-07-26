@@ -41,6 +41,12 @@ static void wakeup_slow(void) {
 }
 
 uint32_t kline_init_connection(void) {
+    // Clear anything left on the line by a previous session before waking the
+    // ECU. Done here rather than just before reading the sync byte: at this
+    // point the ECU has not been asked for anything yet, so there is no risk of
+    // discarding a sync byte that arrived early.
+    uart_pio_flush_rx();
+
     wakeup_slow();
 
     // Initialize PIO TX after wakeup (wakeup uses raw GPIO)

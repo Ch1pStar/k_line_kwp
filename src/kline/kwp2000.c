@@ -235,6 +235,17 @@ ResponseStatus kwp2000_execute(const KWP2000Service *service, KWP2000Response *r
     return kwp2000_read_response(0, response, silent);
 }
 
+const char *kwp2000_status_name(ResponseStatus status) {
+    switch (status) {
+        case RESPONSE_OK:               return "ok";
+        case RESPONSE_ERROR:            return "no reply / malformed";
+        case RESPONSE_NEGATIVE:         return "rejected (7F)";
+        case RESPONSE_CHECKSUM_INVALID: return "bad checksum";
+        case RESPONSE_OVERFLOW:         return "response too long";
+        default:                        return "unknown";
+    }
+}
+
 void kwp2000_print_response(const KWP2000Response *response) {
     char hex[3 * 24 + 4] = "";
     size_t n = 0;

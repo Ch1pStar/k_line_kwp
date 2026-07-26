@@ -11,7 +11,7 @@ A companion project at `../../misc/logger_handler/` contains a 236-byte C166 ass
 ## Architecture
 
 Dual-core design on the RP2040:
-- **Core 0** (`ecu_state_machine.c`): K-Line init, KWP2000 packet send/receive, heartbeat keep-alive. Runs the ECU connection state machine.
+- **Core 0** (`ecu_state_machine.c`): K-Line init, KWP2000 packet send/receive, heartbeat keep-alive. Runs the ECU connection state machine, and the handler injection sequence (`me7_handler.c`) — every step there waits for the ECU's own reply before the next request goes out, so the sequence is paced by the ECU rather than by fixed sleeps.
 - **Core 1** (`console.c`): USB serial console — text parsing and printing only.
 - **Command layer** (`command.c`): the single place that turns "do a thing to the ECU" into core 0 messages (handler loading, the `start-logging` sequence, raw frames). It knows nothing about how a command arrived or where its output goes — a frontend supplies a `CommandHost` (`report` + `pump` callbacks). The RPi 5 host link becomes a second frontend against this same interface.
 - **Inter-core comms** (`ring_buffer.c`): lock-free SPSC ring buffer, 128 messages of 128 bytes each. Exactly one core pushes and one pops a given buffer; `__dmb()` barriers order the payload copy against the index update. Message types live in `messages.h`.
@@ -31,18 +31,27 @@ Dual-core design on the RP2040:
 
 ```
 src/
-  main.c                 - Entry point, ring buffer init, launches core1
-  uart.c / uart.h        - PIO UART init and byte-level I/O
-  uart_rx.pio            - PIO state machine for 8N1 TX/RX
-  kline.c / kline.h      - 5-baud slow init (0x88 wakeup), sync/key byte handshake
-  kwp2000.c / kwp2000.h  - Packet framing, checksum, send/receive, DTC parsing
-  ecu_state_machine.c/h  - Core 0 state machine (IDLE -> CONNECTING -> CONNECTED)
-  command.c / command.h  - Frontend-agnostic command layer (CommandId -> messages)
-  console.c / console.h  - Core 1 USB text console; parses text into Commands
-  ring_buffer.c / ring_buffer.h - Inter-core message queue (SPSC, lock-free)
-  messages.h             - Inter-core message type enum
-  log.c / log.h          - klog(): core 0 logging via the message queue
+  main.c                    - Entry point, ring buffer init, launches core1
+  platform/
+    uart_pio.c / .h         - PIO UART init and byte-level K-line I/O
+    uart_rx.pio             - PIO state machine for 8N1 TX/RX
+  kline/
+    kline.c / .h            - 5-baud slow init (0x88 wakeup), sync/key handshake
+    kwp2000.c / .h          - Packet framing, checksum, send/receive, DTC parsing
+  ecu/
+    ecu_state_machine.c / .h - Core 0 state machine (IDLE -> CONNECTING -> CONNECTED)
+    me7_handler.c / .h      - Handler injection sequence (core 0, ECU-paced)
+  host/
+    command.c / .h          - Frontend-agnostic command layer (CommandId -> messages)
+    console.c / .h          - Core 1 USB text console; parses text into Commands
+  ipc/
+    ring_buffer.c / .h      - Inter-core message queue (SPSC, lock-free)
+    messages.h              - Inter-core message type enum
+    log.c / .h              - klog(): core 0 logging via the message queue
 ```
+
+`platform/uart_pio.*` is the bit-banged K-line UART. Phase 5 adds a real hardware
+UART for the RPi 5 link — do not confuse the two.
 
 Binary blobs linked into firmware:
 - `handler.bin` / `handler_setzi.bin` - ECU RAM handler binaries (converted to ELF objects via objcopy at build time)
@@ -88,7 +97,6 @@ diag-session             - Start diagnostic session (SID 0x10, param 0x86)
 load-handler             - Write handler_setzi.bin to ECU RAM at 0x387A00
 start-logging            - Full fast-logging setup: heartbeat, load, redirect, init, set vars
 read-log                 - Sample the logged variables (bare 0xB7 -> 0xF7)
-fill-distributor-table   - (PRJ variant only) fill 48-entry table with handler addr
 cmd:XXXX                 - Send raw hex KWP2000 command (e.g., cmd:1A9B for ECU ID)
 raw:XXXX                 - Same as cmd: but dumps the unparsed reply bytes (debugging)
 heartbeat:MS             - Set keep-alive interval in ms (use ~2000 during logging)
@@ -135,10 +143,31 @@ sampling; do not disconnect/reconnect mid-session.
 3. **Init trigger:** the first service call after the redirect makes the handler copy the original table into its own; `start-logging` sends `0x3E` for this (it returns SNS itself — expected).
 4. **Set variables** with `0xB7` + format byte + address list, then sample with bare **0xB7** (response **0xF7**).
 
-The PRJ variant (`handler.bin` at `0x387ACC` + `fill-distributor-table`) is a separate,
-older path and is **not** what works today. Its `fill_distributor_table` also writes the
-handler pointer in the wrong byte order (`00 38 7A CC` instead of little-endian
-`CC 7A 38 00`) — left as-is since that path is unused.
+All of this runs on **core 0** (`me7_handler.c`), one step at a time, each waiting for the
+ECU's reply. There are no fixed delays anywhere in the sequence — the reference JS
+(`me7log`'s `loadHandler`) drives it the same way. A full install takes ~1.5s of K-line
+time instead of the ~9s the old sleep-driven version needed, and every chunk's response is
+actually checked: 4 consecutive failures aborts the load instead of grinding through 60
+more chunks of timeouts.
+
+The PRJ variant (`handler.bin` at `0x387ACC` + `fill-distributor-table`) was an older,
+unused path and has been **deleted** (2026-07-26). It never worked: `fill_distributor_table`
+wrote the handler pointer in the wrong byte order (`00 38 7A CC` instead of little-endian
+`CC 7A 38 00`). Recorded here in case the approach is ever revisited.
+
+### Do not reinstall while the redirect is live
+
+Running `start-logging` again on an ECU that already has the handler installed **breaks
+the ECU's other services until a power cycle**. The write chunks travel through the
+handler's own service table; by chunk 12 the rewrite has undone the copy of the original
+table that the init trigger made, so `0x3D` and `0x23` start returning SNS and cannot be
+used to undo it. `0xB7` keeps working (logging survives), and no software sequence
+recovers the rest — `0x3E` does not make the handler re-copy the table.
+
+To reinstall safely, first put the original pointer back at `0xE228`
+(`cmd:3D00E22804D0270602`) so writes route through the ECU's own dispatcher again, then
+run `start-logging`. From an ECU that has just been power-cycled, `start-logging` is
+always safe.
 
 ## What Was Wrong (2026-07 debugging session)
 
@@ -198,6 +227,8 @@ MSG_SET_HEARTBEAT    = 0x09  // Set heartbeat interval (4 bytes, big-endian ms)
 MSG_RAW_COMMAND      = 0x0A  // Send frame, dump every reply byte verbatim (raw:)
 MSG_SET_BAUD         = 0x0B  // Change K-line bit rate (4 bytes, big-endian)
 MSG_LOG              = 0x0C  // Text line from core0 for core1 to print
+MSG_INSTALL_HANDLER  = 0x0D  // Run the full injection sequence on core0
+MSG_LOAD_HANDLER     = 0x0E  // Write the handler blob only
 ```
 
 ## ResponseStatus (kwp2000.h)

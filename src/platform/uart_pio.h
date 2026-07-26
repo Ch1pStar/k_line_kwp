@@ -18,6 +18,14 @@ void uart_pio_init_tx(void);
 // Initialize PIO-based UART RX
 void uart_pio_init_rx(void);
 
+// Discard anything sitting in the RX FIFO.
+//
+// The K-line is one wire shared with everything else on it, and a connect that
+// starts with bytes still queued reads them as the ECU's handshake - every
+// field lands one byte late, and since a failed attempt leaves its own bytes
+// behind, it never recovers. Call this before starting an init sequence.
+void uart_pio_flush_rx(void);
+
 // Read a byte with specified timeout in microseconds.
 // Returns UART_TIMEOUT on timeout.
 uint32_t uart_read_byte_timeout(uint32_t timeout_us);

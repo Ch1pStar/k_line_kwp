@@ -68,3 +68,6 @@ uint8_t kwp2000_parse_dtcs(const KWP2000Response *response, DTCData *dtc_array, 
 
 // Print DTCs in human-readable format
 void kwp2000_print_dtcs(DTCData *dtcs, size_t num_dtcs);
+
+// Short name for a ResponseStatus, for logs and error reporting.
+const char *kwp2000_status_name(ResponseStatus status);

@@ -22,4 +22,6 @@ typedef enum {
     MSG_RAW_COMMAND         = 0x0A,  // core1 -> core0: send, dump reply verbatim
     MSG_SET_BAUD            = 0x0B,  // core1 -> core0: 4 bytes, big-endian
     MSG_LOG                 = 0x0C,  // core0 -> core1: text line to print
+    MSG_INSTALL_HANDLER     = 0x0D,  // core1 -> core0: run the full injection
+    MSG_LOAD_HANDLER        = 0x0E,  // core1 -> core0: write the blob only
 } MessageType;

@@ -2,6 +2,7 @@
 #include "uart_pio.h"
 #include "kline.h"
 #include "kwp2000.h"
+#include "me7_handler.h"
 #include "log.h"
 
 #include <stdio.h>
@@ -10,6 +11,10 @@
 #include "pico/time.h"
 
 #define DEFAULT_HEARTBEAT_INTERVAL_MS 5000
+
+// Once the handler is installed the session must not be allowed to lapse: a
+// drop after the redirect needs an ECU power cycle to recover.
+#define LOGGING_HEARTBEAT_INTERVAL_MS 2000
 
 void ecu_init(ECUStateMachine *sm, RingBuffer *rx, RingBuffer *tx) {
     sm->state = ECU_STATE_IDLE;
@@ -230,6 +235,46 @@ static void ecu_process_messages(ECUStateMachine *sm) {
 
             case MSG_RAW_COMMAND:
                 ecu_send_raw(sm, &msg);
+                break;
+
+            // Handler injection runs here, on core 0, so each step can wait for
+            // the ECU's own reply before the next goes out. It used to be
+            // driven from core 1 through fixed sleeps around a queue, which
+            // meant guessing the pacing and blocking the console for ~8s.
+            case MSG_INSTALL_HANDLER:
+            case MSG_LOAD_HANDLER:
+                if (!sm->connected) {
+                    klog("Cannot install handler - ECU not connected");
+                    BufferMessage nack = {
+                        .messageType = MSG_NACK, .length = 1, .data = {0xFF}
+                    };
+                    ringbuffer_push(sm->tx_buffer, &nack);
+                    break;
+                }
+
+                if (msg.messageType == MSG_INSTALL_HANDLER) {
+                    sm->heartbeat_interval_ms = LOGGING_HEARTBEAT_INTERVAL_MS;
+                    klog("Heartbeat interval set to %u ms",
+                         (unsigned)sm->heartbeat_interval_ms);
+                }
+
+                {
+                    const bool ok = (msg.messageType == MSG_INSTALL_HANDLER)
+                                        ? me7_handler_install()
+                                        : me7_handler_load();
+
+                    // The sequence is a solid stream of requests, so the link
+                    // was live throughout - don't let the heartbeat fire the
+                    // moment it finishes.
+                    sm->last_activity = to_ms_since_boot(get_absolute_time());
+
+                    BufferMessage reply = {
+                        .messageType = ok ? MSG_ACK : MSG_NACK,
+                        .length = ok ? 0 : 1,
+                        .data = {0},
+                    };
+                    ringbuffer_push(sm->tx_buffer, &reply);
+                }
                 break;
 
             case MSG_SET_BAUD:

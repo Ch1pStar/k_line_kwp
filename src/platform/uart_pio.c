@@ -51,6 +51,12 @@ void uart_set_baud(uint32_t baud) {
     if (tx_loaded) uart_pio_init_tx();
 }
 
+void uart_pio_flush_rx(void) {
+    while (!pio_sm_is_rx_fifo_empty(pio_rx, sm_rx)) {
+        (void)uart_rx_program_getc(pio_rx, sm_rx);
+    }
+}
+
 uint32_t uart_read_byte_timeout(uint32_t timeout_us) {
     absolute_time_t timeout_time = make_timeout_time_us(timeout_us);
 

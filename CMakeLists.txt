@@ -27,15 +27,6 @@ set(PICO_BOARD pico)
 
 pico_sdk_init()
 
-# Convert handler.bin to object file
-add_custom_command(
-    OUTPUT handler.o
-    COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_OBJCOPY} -I binary -O elf32-littlearm -B arm
-        handler.bin ${CMAKE_CURRENT_BINARY_DIR}/handler.o
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/handler.bin
-)
-
 # Convert handler_setzi.bin to object file
 add_custom_command(
     OUTPUT handler_setzi.o
@@ -45,8 +36,8 @@ add_custom_command(
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/handler_setzi.bin
 )
 
-# Dummy target to manage handler.o
-add_custom_target(generate_handler_obj DEPENDS handler.o handler_setzi.o)
+# Dummy target to manage handler_setzi.o
+add_custom_target(generate_handler_obj DEPENDS handler_setzi.o)
 
 if (TARGET tinyusb_device)
 
@@ -56,6 +47,7 @@ if (TARGET tinyusb_device)
         src/kline/kline.c
         src/kline/kwp2000.c
         src/ecu/ecu_state_machine.c
+        src/ecu/me7_handler.c
         src/host/command.c
         src/host/console.c
         src/ipc/ring_buffer.c
@@ -77,7 +69,7 @@ if (TARGET tinyusb_device)
     add_dependencies(k_line_kwp generate_handler_obj)
 
     # Include the binary object file directly
-    target_sources(k_line_kwp PRIVATE handler.o handler_setzi.o)
+    target_sources(k_line_kwp PRIVATE handler_setzi.o)
 
     target_link_libraries(k_line_kwp PRIVATE
         pico_stdlib

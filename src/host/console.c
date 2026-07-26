@@ -7,21 +7,6 @@
 #include <stdlib.h>
 #include "pico/stdlib.h"
 
-static void process_ecu_messages(Console *console);
-
-// --- CommandHost implementation -------------------------------------------
-// The command layer reports progress and asks to be kept unblocked through
-// these; it never touches stdio itself.
-
-static void console_report(void *ctx, const char *line) {
-    (void)ctx;
-    printf("%s\n", line);
-}
-
-static void console_pump(void *ctx) {
-    process_ecu_messages((Console *)ctx);
-}
-
 // --- text -> Command ------------------------------------------------------
 
 static void print_help(void) {
@@ -35,7 +20,6 @@ static void print_help(void) {
     printf("load-handler     - Load handler into ECU\n");
     printf("start-logging    - Inject handler + set up fast logging (do after connect)\n");
     printf("read-log         - Sample the logged variables (bare 0xB7)\n");
-    printf("fill-distributor-table - Fill distributor table\n");
     printf("cmd:XXXX         - Send raw KWP2000 command (hex)\n");
     printf("raw:XXXX         - Same, but dump the unparsed reply bytes\n");
     printf("heartbeat:MS     - Set keep-alive interval in ms\n");
@@ -59,7 +43,6 @@ static const CommandName command_names[] = {
     {"load-handler",           CMD_LOAD_HANDLER},
     {"start-logging",          CMD_START_LOGGING},
     {"read-log",               CMD_READ_LOG},
-    {"fill-distributor-table", CMD_FILL_DISTRIBUTOR_TABLE},
 };
 
 // Parse "cmd:1A9B" / "raw:1A9B" into a frame payload.
@@ -242,12 +225,7 @@ void console_init(Console *console, RingBuffer *tx, RingBuffer *rx) {
     console->rx_buffer = rx;
     console->tx_buffer = tx;
 
-    const CommandHost host = {
-        .report = console_report,
-        .pump = console_pump,
-        .ctx = console,
-    };
-    command_init(tx, &host);
+    command_init(tx);
 
     printf("Console ready. Type 'help' for commands.\n");
 }
