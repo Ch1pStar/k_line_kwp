@@ -16,7 +16,16 @@
       "Bash(/opt/projects/side-projects/k_line_kwp/build.sh)",
       "Bash(git rm:*)",
       "Bash(git config:*)",
-      "Bash(echo \"---EXIT:$?---\")"
+      "Bash(echo \"---EXIT:$?---\")",
+      "WebSearch",
+      "WebFetch(domain:damogranlabs.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:kovo-blog.blogspot.com)",
+      "WebFetch(domain:schuett.io)",
+      "WebFetch(domain:www.mictronics.de)",
+      "Bash(./build.sh)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:hyperlogos.org)"
     ]
   }
 }

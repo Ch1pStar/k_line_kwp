@@ -13,8 +13,11 @@ extern unsigned char _binary_handler_setzi_bin_start[];
 extern unsigned char _binary_handler_setzi_bin_end[];
 
 // Helper: push a MSG_COMMAND with write-memory service (0x3d) for one chunk
+// data_offset is passed in rather than derived from a chunk index: computing it
+// here as a uint8_t silently wrapped at 256 bytes and re-sent the start of the
+// binary for every chunk past 31.
 static void send_write_memory_chunk(Dashboard *dash, uint32_t address,
-                                    const unsigned char *data, size_t size, uint8_t chunk_number) {
+                                    const unsigned char *data, size_t size, size_t data_offset) {
     uint8_t address_size = 3;
     uint8_t command_length = 1 + address_size + 1 + size;
 
@@ -29,11 +32,10 @@ static void send_write_memory_chunk(Dashboard *dash, uint32_t address,
     msg.data[3] = address & 0xFF;
     msg.data[4] = size;
 
-    const uint8_t data_offset = chunk_number * 8;
     memcpy(&msg.data[5], &data[data_offset], size);
 
-    printf("Writing memory chunk to ECU. Address: 0x%08X, Size: 0x%02X(%u), Chunk: %d\n",
-           address, size, size, chunk_number);
+    printf("Writing memory chunk to ECU. Address: 0x%06X, Size: %u, File offset: %u\n",
+           (unsigned)address, (unsigned)size, (unsigned)data_offset);
 
     ringbuffer_push(dash->tx_buffer, &msg);
 }
@@ -57,20 +59,21 @@ static void fill_distributor_table(Dashboard *dash);
 static void load_handler_setzi(Dashboard *dash) {
     size_t size = _binary_handler_setzi_bin_end - _binary_handler_setzi_bin_start;
     const unsigned char *data = _binary_handler_setzi_bin_start;
-    uint8_t chunk_size = 0x08;
-    const uint8_t num_chunks = (size + chunk_size - 1) / chunk_size;
+    const size_t chunk_size = 0x08;
+    const size_t num_chunks = (size + chunk_size - 1) / chunk_size;
     uint32_t start_address = 0x387a00;
 
-    printf("Loading handler_setzi into ECU RAM. Size: %zu, Number of chunks: %u\n", size, num_chunks);
+    printf("Loading handler_setzi into ECU RAM. Size: %u, Number of chunks: %u\n",
+           (unsigned)size, (unsigned)num_chunks);
 
-    for (uint8_t i = 0; i < num_chunks; i++) {
-        uint8_t this_chunk = chunk_size;
-        if (i + 1 == num_chunks) {
-            this_chunk = size - (i * chunk_size);
+    for (size_t i = 0; i < num_chunks; i++) {
+        size_t offset = i * chunk_size;
+        size_t this_chunk = chunk_size;
+        if (offset + this_chunk > size) {
+            this_chunk = size - offset;
         }
 
-        uint32_t chunk_address = start_address + (i * chunk_size);
-        send_write_memory_chunk(dash, chunk_address, data, this_chunk, i);
+        send_write_memory_chunk(dash, start_address + offset, data, this_chunk, offset);
         sleep_ms(100);
     }
 
@@ -80,20 +83,21 @@ static void load_handler_setzi(Dashboard *dash) {
 static void load_handler_prj(Dashboard *dash) {
     size_t size = _binary_handler_bin_end - _binary_handler_bin_start;
     const unsigned char *data = _binary_handler_bin_start;
-    uint8_t chunk_size = 0x08;
-    const uint8_t num_chunks = (size + chunk_size - 1) / chunk_size;
+    const size_t chunk_size = 0x08;
+    const size_t num_chunks = (size + chunk_size - 1) / chunk_size;
     uint32_t start_address = 0x387acc;
 
-    printf("Loading handler into ECU RAM. Size: %zu, Number of chunks: %u\n", size, num_chunks);
+    printf("Loading handler into ECU RAM. Size: %u, Number of chunks: %u\n",
+           (unsigned)size, (unsigned)num_chunks);
 
-    for (uint8_t i = 0; i < num_chunks; i++) {
-        uint8_t this_chunk = chunk_size;
-        if (i + 1 == num_chunks) {
-            this_chunk = size - (i * chunk_size);
+    for (size_t i = 0; i < num_chunks; i++) {
+        size_t offset = i * chunk_size;
+        size_t this_chunk = chunk_size;
+        if (offset + this_chunk > size) {
+            this_chunk = size - offset;
         }
 
-        uint32_t chunk_address = start_address + (i * chunk_size);
-        send_write_memory_chunk(dash, chunk_address, data, this_chunk, i);
+        send_write_memory_chunk(dash, start_address + offset, data, this_chunk, offset);
         sleep_ms(100);
     }
 
@@ -136,6 +140,65 @@ static void send_command(Dashboard *dash, const uint8_t *data, uint8_t length) {
     ringbuffer_push(dash->tx_buffer, &msg);
 }
 
+// The 0xB7 "set logging variables" request: SID then a leading format byte
+// (0x03, still under investigation) then one 3-byte big-endian address per
+// variable. These map to nmot, ub, wped, plsol, tmot on the 8N0906018BP ECU
+// (see me7log/ecu_files/8N0906018BP 0002.ecu for scaling). Positive resp = 0xF7.
+static const uint8_t set_log_vars_cmd[] = {
+    0xB7,
+    0x03,
+    0x00, 0xF8, 0x9A,   // nmot  - engine speed
+    0x38, 0x09, 0x91,   // ub    - battery voltage
+    0x38, 0x09, 0x9D,   // wped  - accelerator pedal
+    0x38, 0x09, 0xF6,   // plsol - target boost
+    0x38, 0x0A, 0x32,   // tmot  - coolant temp
+};
+
+// Drive the whole handler-injection sequence in the order proven to work. The
+// ECU must already be connected (5-baud init done via `connect`). See the
+// "Fast Logging" section of README.md for why each step is here.
+static void start_logging(Dashboard *dash) {
+    printf("\n=== start-logging: injecting fast-logging handler ===\n");
+
+    // 1. Keep the KWP session alive throughout. Without this the session times
+    //    out in the gaps between steps and every later command fails.
+    printf("[1/6] heartbeat -> 2000ms\n");
+    send_set_heartbeat(dash, 2000);
+    sleep_ms(200);
+
+    // 2. Manufacturer session - required before ReadMemoryByAddress/WriteMemory.
+    printf("[2/6] diagnostic session (10 86)\n");
+    { uint8_t d[] = {0x10, 0x86}; send_command(dash, d, sizeof(d)); }
+    sleep_ms(300);
+
+    // 3. Write the 582-byte handler to RAM at 0x387A00. Must happen before the
+    //    redirect, while 0x3D still routes through the original dispatcher.
+    printf("[3/6] loading handler\n");
+    load_handler_setzi(dash);
+    sleep_ms(200);
+
+    // 4. Redirect the service-table pointer at 0xE228 to our table at 0x387A00.
+    //    Bytes 00 3A E1 00 are the C166 far-pointer encoding of 0x387A00.
+    printf("[4/6] redirecting service table (0xE228 -> 0x387A00)\n");
+    { uint8_t d[] = {0x3D, 0x00, 0xE2, 0x28, 0x04, 0x00, 0x3A, 0xE1, 0x00};
+      send_command(dash, d, sizeof(d)); }
+    sleep_ms(300);
+
+    // 5. First post-redirect call runs the handler's table-copy init. It returns
+    //    SNS for 0x3E itself; that is expected and harmless.
+    printf("[5/6] init trigger (3E)\n");
+    { uint8_t d[] = {0x3E}; send_command(dash, d, sizeof(d)); }
+    sleep_ms(300);
+
+    // 6. Hand the variable list to the handler. Positive response is 0xF7.
+    //    After this, a bare `read-log` returns the packed values.
+    printf("[6/6] setting log variables (B7 + list)\n");
+    send_command(dash, set_log_vars_cmd, sizeof(set_log_vars_cmd));
+    sleep_ms(300);
+
+    printf("=== handler ready. Use `read-log` to sample. ===\n\n");
+}
+
 static void process_command(Dashboard *dash, const char *cmd) {
     if (strcmp(cmd, "help") == 0) {
         printf("\n--- Available Commands ---\n");
@@ -146,8 +209,13 @@ static void process_command(Dashboard *dash, const char *cmd) {
         printf("clear-dtcs       - Clear diagnostic trouble codes\n");
         printf("diag-session     - Start special diagnostic session\n");
         printf("load-handler     - Load handler into ECU\n");
+        printf("start-logging    - Inject handler + set up fast logging (do after connect)\n");
+        printf("read-log         - Sample the logged variables (bare 0xB7)\n");
         printf("fill-distributor-table - Fill distributor table\n");
         printf("cmd:XXXX         - Send raw KWP2000 command (hex)\n");
+        printf("raw:XXXX         - Same, but dump the unparsed reply bytes\n");
+        printf("heartbeat:MS     - Set keep-alive interval in ms\n");
+        printf("baud:N           - Set K-line bit rate (e.g. baud:57600)\n");
         printf("help             - Show this help\n");
         printf("------------------------\n\n");
         return;
@@ -203,14 +271,52 @@ static void process_command(Dashboard *dash, const char *cmd) {
         return;
     }
 
+    if (strcmp(cmd, "start-logging") == 0) {
+        start_logging(dash);
+        return;
+    }
+
+    if (strcmp(cmd, "read-log") == 0) {
+        // Bare 0xB7: the handler returns the packed variable values (resp 0xF7).
+        uint8_t data[] = {0xB7};
+        send_command(dash, data, sizeof(data));
+        return;
+    }
+
+    // "baud:57600" - follow the ECU after it switches rate mid-session
+    if (strncmp(cmd, "baud:", 5) == 0) {
+        uint32_t baud = (uint32_t)strtoul(cmd + 5, NULL, 10);
+        if (baud == 0) {
+            printf("Error: invalid baud rate\n");
+            return;
+        }
+        BufferMessage msg = { .messageType = MSG_SET_BAUD, .length = 4 };
+        msg.data[0] = (baud >> 24) & 0xFF;
+        msg.data[1] = (baud >> 16) & 0xFF;
+        msg.data[2] = (baud >> 8) & 0xFF;
+        msg.data[3] = baud & 0xFF;
+        ringbuffer_push(dash->tx_buffer, &msg);
+        return;
+    }
+
+    // "heartbeat:60000" - park the keep-alive so it can't consume the first
+    // service call after a handler redirect, which is the one that runs init.
+    if (strncmp(cmd, "heartbeat:", 10) == 0) {
+        uint32_t interval = (uint32_t)strtoul(cmd + 10, NULL, 10);
+        printf("Setting heartbeat interval to %u ms\n", (unsigned)interval);
+        send_set_heartbeat(dash, interval);
+        return;
+    }
+
     if (strcmp(cmd, "fill-distributor-table") == 0) {
         printf("Filling distributor table...\n");
         fill_distributor_table(dash);
         return;
     }
 
-    // Raw hex command: "cmd:1A9B"
-    if (strncmp(cmd, "cmd:", 4) == 0) {
+    // Raw hex command: "cmd:1A9B", or "raw:1A9B" to dump the unparsed reply
+    if (strncmp(cmd, "cmd:", 4) == 0 || strncmp(cmd, "raw:", 4) == 0) {
+        const bool is_raw = (cmd[0] == 'r');
         const char *hex_str = cmd + 4;
         size_t hex_len = strlen(hex_str);
 
@@ -220,7 +326,7 @@ static void process_command(Dashboard *dash, const char *cmd) {
         }
 
         BufferMessage msg = {
-            .messageType = MSG_COMMAND,
+            .messageType = is_raw ? MSG_RAW_COMMAND : MSG_COMMAND,
             .length = hex_len / 2,
         };
 
@@ -229,7 +335,7 @@ static void process_command(Dashboard *dash, const char *cmd) {
             msg.data[i / 2] = (uint8_t)strtol(hex_byte, NULL, 16);
         }
 
-        printf("Sending custom command: ");
+        printf("Sending %s command: ", is_raw ? "raw" : "custom");
         for (size_t i = 0; i < msg.length; i++) {
             printf("%02X ", msg.data[i]);
         }

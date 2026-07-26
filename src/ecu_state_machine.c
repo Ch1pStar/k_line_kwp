@@ -75,8 +75,20 @@ static bool ecu_send_command(ECUStateMachine *sm, const BufferMessage *msg) {
     KWP2000Response response;
     ResponseStatus status = kwp2000_execute(&service, &response, false);
 
-    if (status == RESPONSE_OK) {
+    // Any reply at all - including a rejection - counts as activity.
+    if (status == RESPONSE_OK || status == RESPONSE_NEGATIVE) {
         sm->last_activity = to_ms_since_boot(get_absolute_time());
+    }
+
+    if (status == RESPONSE_OK) {
+
+        // Decode fault codes straight to the USB console. The raw bytes still go
+        // to core 1 below, so the hex dump stays available for reverse engineering.
+        if (service.serviceId == KWP_SID_READ_DTC_BY_STATUS) {
+            DTCData dtcs[MAX_DTCS_PER_RESPONSE];
+            uint8_t num_dtcs = kwp2000_parse_dtcs(&response, dtcs, MAX_DTCS_PER_RESPONSE);
+            kwp2000_print_dtcs(dtcs, num_dtcs);
+        }
     }
 
     BufferMessage response_msg;
@@ -94,6 +106,44 @@ static bool ecu_send_command(ECUStateMachine *sm, const BufferMessage *msg) {
     return (status == RESPONSE_OK);
 }
 
+// Send a frame and dump every byte that comes back, making no assumptions about
+// framing. The normal parser skips exactly the bytes it expects to be echoed;
+// when that assumption is wrong every subsequent field is misread, so this is
+// the tool for finding out what the ECU actually put on the wire.
+static void ecu_send_raw(ECUStateMachine *sm, const BufferMessage *msg) {
+    if (!sm->connected) {
+        printf("Cannot send raw command - ECU not connected\n");
+        return;
+    }
+
+    KWP2000Service service;
+    service.serviceId = msg->data[0];
+    service.dataLength = msg->length - 1;
+    for (size_t i = 1; i < msg->length && i - 1 < MAX_DATA_SIZE; i++) {
+        service.dataBytes[i - 1] = msg->data[i];
+    }
+
+    size_t sent = kwp2000_send(&service, false);
+    printf("RAW: sent %u bytes (echo consumed inline); dumping the reply verbatim\n",
+           (unsigned)sent);
+
+    size_t count = 0;
+    while (count < 256) {
+        uint32_t byte = uart_read_byte_timeout(300000);
+        if (byte == UART_TIMEOUT) break;
+        if (count % 16 == 0) printf("\n  [%3u] ", (unsigned)count);
+        printf("%02X ", (unsigned)byte);
+        count++;
+    }
+
+    printf("\nRAW: %u reply bytes.\n", (unsigned)count);
+
+    sm->last_activity = to_ms_since_boot(get_absolute_time());
+
+    BufferMessage ack = { .messageType = MSG_ACK, .length = 0 };
+    ringbuffer_push(sm->tx_buffer, &ack);
+}
+
 static void ecu_check_connection(ECUStateMachine *sm) {
     if (!sm->connected) return;
 
@@ -107,7 +157,11 @@ static void ecu_check_connection(ECUStateMachine *sm) {
     KWP2000Response keep_alive_resp;
     ResponseStatus status = kwp2000_execute(&keep_alive, &keep_alive_resp, true);
 
-    if (status == RESPONSE_OK) {
+    // A negative response still proves the ECU is listening. This matters right
+    // after the handler redirect: every service returns SNS until the handler
+    // copies the service table, and treating that as a dead link tore down a
+    // perfectly good connection mid-install.
+    if (status == RESPONSE_OK || status == RESPONSE_NEGATIVE) {
         sm->last_activity = now;
     } else {
         printf("ECU heartbeat failed - connection lost\n");
@@ -157,6 +211,23 @@ static void ecu_process_messages(ECUStateMachine *sm) {
                         .length = 0
                     };
                     ringbuffer_push(sm->tx_buffer, &ack);
+                }
+                break;
+
+            case MSG_RAW_COMMAND:
+                ecu_send_raw(sm, &msg);
+                break;
+
+            case MSG_SET_BAUD:
+                if (msg.length >= 4) {
+                    uint32_t baud =
+                        ((uint32_t)msg.data[0] << 24) |
+                        ((uint32_t)msg.data[1] << 16) |
+                        ((uint32_t)msg.data[2] << 8)  |
+                        ((uint32_t)msg.data[3]);
+                    printf("K-line baud: %u -> %u\n",
+                           (unsigned)uart_get_baud(), (unsigned)baud);
+                    uart_set_baud(baud);
                 }
                 break;
 

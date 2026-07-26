@@ -28,3 +28,11 @@ uint32_t uart_read_byte(void);
 
 // Send a single byte
 void uart_send_byte(uint32_t byte);
+
+// Change the K-line bit rate at runtime. The ECU can be asked to switch to a
+// faster rate mid-session (StartDiagnosticSession with a baud identifier), and
+// both PIO state machines have to follow it.
+void uart_set_baud(uint32_t baud);
+
+// Currently configured K-line bit rate.
+uint32_t uart_get_baud(void);

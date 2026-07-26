@@ -85,9 +85,17 @@ A **236-byte C166 assembly exploit** that injects a custom fast-logging diagnost
 
 | Request   | Response | Service                          | Description                                        |
 |-----------|----------|----------------------------------|----------------------------------------------------|
-| 0xBE      | 0xFE     | Custom Fast Logging (handler)    | Injected handler for multi-variable datalogging    |
+| 0xB7      | 0xF7     | Custom Fast Logging (`handler_setzi.bin`) | The handler we actually inject and use. Set variables, then bare 0xB7 to sample. |
+| 0xBE      | 0xFE     | Custom Fast Logging (`handler.bin`, 236B) | The other handler variant. NOT the one wired to `start-logging`. |
 | 0xA0-0xBF | —        | Manufacturer-specific range      | OEM-defined services                               |
 | 0xC0-0xFE | —        | System-supplier-specific range   | Supplier-defined services                          |
+
+> **Which SID?** The 582-byte `handler_setzi.bin` (the one `load-handler`/`start-logging`
+> write) responds on **0xB7 / 0xF7**, not 0xBE. The 0xBE number comes from the
+> 236-byte `handler.bin` variant and its `logger_handler` README, which describes a
+> *different* binary. Confirmed empirically: at offset 204 of `handler_setzi.bin` the
+> instruction is `47 F8 B7` = `CMPB RL4, #0B7h`. Sending 0xBE to the setzi handler
+> just returns SNS.
 
 ---
 
@@ -148,7 +156,14 @@ Returned as `0x7F [SID] [NRC]`
 
 **Checksum:** `(1 + dataLength) + serviceId + sum(all_data_bytes)`
 
-The ECU echoes all sent bytes before responding. The response parser must skip echo bytes before parsing the actual response.
+**Half-duplex echo (important):** K-line is a single wire, so every byte the Pico
+transmits appears back on its own RX. This is *not* the ECU echoing — it is electrical
+loopback. The firmware reads and verifies each echoed byte **inline as it sends**
+(`kwp2000.c: send_packet`); the response reader then starts at the ECU's first real
+byte. The previous approach transmitted the whole frame and *then* tried to skip the
+echo, which overflowed the PIO RX FIFO (~9 bytes) and silently dropped echo bytes on
+any frame longer than ~9 bytes — desynchronising every field of the reply. That single
+bug was what made the 0xB7 handler look like it was rejecting valid requests.
 
 ---
 
@@ -170,17 +185,54 @@ The ECU echoes all sent bytes before responding. The response parser must skip e
 
 ## Handler Configuration (ME7 ECU RAM)
 
-| Address    | Name          | Description                                |
-|------------|---------------|--------------------------------------------|
-| 0x387A00   | newdist       | New service distributor table (48 entries)  |
-| 0x387ACC   | handler code  | Injected handler binary location            |
-| 0xE1F0     | resptype      | Service response type flag                  |
-| 0xE228     | orgdistadr    | Far pointer to original service table       |
-| 0xE1CE     | recbufptr     | Pointer to receive buffer table             |
-| 0xE1CA     | reclen        | Length of incoming request                  |
-| 0x7ACA     | setupcomplete | Initialization flag (0xFFFF = ready)        |
+The **working** setup uses `handler_setzi.bin` loaded as one contiguous 582-byte blob
+at `0x387A00` — its first 192 bytes are the service table (48 x 4-byte entries all
+pointing at the handler entry `0x387AC6`) and the rest is code. It is **not** the
+split table-at-0x387A00 / code-at-0x387ACC layout the older `handler.bin` PRJ path uses.
 
-### Data Array Format (for 0xBE logging handler)
+| Address    | Name          | Description                                              |
+|------------|---------------|---------------------------------------------------------|
+| 0x387A00   | newdist       | Injected service table + handler blob (582 bytes total) |
+| 0x387AC6   | handler entry | Code entry point (what every table slot points to)      |
+| 0xE228     | dist pointer  | Far ptr to the active service table. **This is what we redirect.** |
+| 0xE1CE     | recbufptr     | Pointer to receive buffer                               |
+| 0xE1CA     | reclen        | Length of incoming request                              |
+
+Original value at `0xE228` on this ECU is `D0 27 06 02` (= far ptr `0x81A7D0`, the
+BootRom table). A hard ECU reset restores this default.
+
+### Redirecting the dispatcher (the step that was missing)
+
+Loading the handler into RAM is not enough — the ECU still dispatches through its
+original table until you repoint `0xE228`:
+
+```
+cmd:3D00E22804003AE100
+     3D             WriteMemoryByAddress
+     00E228         address 0x00E228
+     04             4 bytes
+     003AE100       C166 far-pointer encoding of 0x387A00
+```
+
+`0x387A00` encodes as `00 3A E1 00`: page = `0x387A00 >> 14 = 0xE1`, offset =
+`0x387A00 & 0x3FFF = 0x3A00`, stored little-endian as `[offset_lo offset_hi page_lo page_hi]`.
+
+Flash memory (e.g. the original table at `0x81A7D0`) is **not** readable via 0x23 —
+it returns NRC 0x12. Only RAM reads are permitted, so the handler must copy the
+original table itself on its first invocation (which is why the init step exists).
+
+### 0xB7 Fast Logging protocol (`handler_setzi.bin`)
+
+1. **Set variables:** `0xB7` + `0x03` + one 3-byte big-endian address per variable.
+   Positive response `0xF7`. Example (5 vars): `B7 03 00F89A 380991 38099D 3809F6 380A32`.
+2. **Sample:** bare `0xB7`. Response `F7` carries the packed values, one field per
+   variable in request order, sizes per the ECU's variable definitions.
+
+The leading `0x03` format byte's exact meaning is still under investigation. The
+`[length][3-byte addr]` + `0x00` terminator array format below belongs to the *other*
+(0xBE) handler variant.
+
+### Data Array Format (0xBE handler variant only)
 
 Each entry is 4 bytes:
 

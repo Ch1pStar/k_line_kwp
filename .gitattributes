@@ -1,0 +1,14 @@
+# Normalise line endings: LF in the repo and in the working tree.
+# This project lives on /mnt/c and is edited from both WSL and Windows tools,
+# so pin eol=lf explicitly rather than relying on core.autocrlf / core.eol.
+* text=auto eol=lf
+
+# Shell scripts must stay LF - they are run under WSL/Linux.
+*.sh text eol=lf
+
+# Binary blobs: never touch.
+*.bin  binary
+*.uf2  binary
+*.elf  binary
+*.hex  binary
+*.o    binary

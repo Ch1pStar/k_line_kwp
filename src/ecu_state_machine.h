@@ -14,6 +14,8 @@ typedef enum {
     MSG_DISCONNECT_ECU      = 0x07,
     MSG_ECU_DISCONNECTED    = 0x08,
     MSG_SET_HEARTBEAT       = 0x09,
+    MSG_RAW_COMMAND         = 0x0A,  // send frame, dump every byte back verbatim
+    MSG_SET_BAUD            = 0x0B,  // change K-line bit rate (4 bytes, big-endian)
 } MessageType;
 
 typedef enum {
