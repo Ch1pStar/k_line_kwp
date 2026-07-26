@@ -171,6 +171,14 @@ byte (`0x03`, meaning TBD) + one 3-byte big-endian address per variable. The rep
 (`0xF7`) packs the values in request order. The default set in `start-logging` is
 nmot, ub, wped, plsol, tmot — addresses/scaling from `me7log/ecu_files/8N0906018BP 0002.ecu`.
 
+**Variable size is encoded in the address.** Bit 0x40 of the first address byte means
+"2-byte variable"; without it the variable is 1 byte. Cross-checked against the `.ecu`
+file: `78 4B 12` is `tats_w` at 0x384B12 size 2, `40 F9 A4` is `mshfm_w` at 0x00F9A4
+size 2, while `38 0A 32` is `tmot` at 0x380A32 size 1. So **the reply length is
+computable from the request alone** — the firmware can frame a sample without knowing
+anything about scaling, which is what keeps decode on the host side. The leading `0x03`
+is *not* a variable count: it is identical across every var-list length in `me7log`.
+
 **0xBE handler variant (not used):** each entry is 4 bytes `[length][3-byte addr]`,
 array terminated by `0x00`.
 
