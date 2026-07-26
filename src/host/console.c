@@ -1,6 +1,7 @@
 #include "console.h"
 #include "command.h"
 #include "messages.h"
+#include "proto.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -30,6 +31,7 @@ static void print_help(void) {
     printf("raw:XXXX         - Same, but dump the unparsed reply bytes\n");
     printf("heartbeat:MS     - Set keep-alive interval in ms\n");
     printf("baud:N           - Set K-line bit rate (e.g. baud:57600)\n");
+    printf("proto-test       - Run the host-link framing self-test\n");
     printf("help             - Show this help\n");
     printf("------------------------\n\n");
 }
@@ -148,11 +150,16 @@ static bool parse_command(const char *text, Command *out) {
     return false;
 }
 
-static void process_command(Console *console, const char *text) {
-    (void)console;
-
+static void process_command(const char *text) {
     if (strcmp(text, "help") == 0) {
         print_help();
+        return;
+    }
+
+    // Pure software check with no ECU involved, so it is handled here rather
+    // than going through the command layer.
+    if (strcmp(text, "proto-test") == 0) {
+        proto_selftest();
         return;
     }
 
@@ -175,13 +182,13 @@ static void process_command(Console *console, const char *text) {
 
 // --- core 0 messages -> console -------------------------------------------
 
-static void process_ecu_messages(Console *console) {
-    BufferMessage msg;
-
-    while (ringbuffer_pop(console->rx_buffer, &msg)) {
-        switch (msg.messageType) {
+// One message from core 0. The drain loop lives in host.c, which fans each
+// message out to every frontend - the queue has a single consumer by design.
+void console_on_message(const BufferMessage *msg) {
+    {
+        switch (msg->messageType) {
             case MSG_ACK:
-                if (msg.length > 0 && msg.data[0] == 1) {
+                if (msg->length > 0 && msg->data[0] == 1) {
                     printf("ECU connected successfully\n");
                 } else {
                     printf("Command acknowledged\n");
@@ -190,20 +197,20 @@ static void process_ecu_messages(Console *console) {
 
             case MSG_NACK:
                 printf("Command failed with error code: %d\n",
-                       msg.length > 0 ? msg.data[0] : 0);
+                       msg->length > 0 ? msg->data[0] : 0);
                 break;
 
             case MSG_ECU_DATA:
-                printf("ECU Response Data (%d bytes): ", msg.length);
-                for (size_t i = 0; i < msg.length; i++) {
-                    printf("%02X ", msg.data[i]);
+                printf("ECU Response Data (%d bytes): ", msg->length);
+                for (size_t i = 0; i < msg->length; i++) {
+                    printf("%02X ", msg->data[i]);
                 }
                 printf("\n");
 
                 printf("ECU Response ASCII: \"");
-                for (size_t i = 0; i < msg.length; i++) {
-                    if (msg.data[i] >= 32 && msg.data[i] <= 126) {
-                        putchar(msg.data[i]);
+                for (size_t i = 0; i < msg->length; i++) {
+                    if (msg->data[i] >= 32 && msg->data[i] <= 126) {
+                        putchar(msg->data[i]);
                     } else {
                         putchar('.');
                     }
@@ -212,15 +219,15 @@ static void process_ecu_messages(Console *console) {
                 break;
 
             case MSG_SAMPLE: {
-                if (msg.length < 6) break;
-                const uint16_t seq = ((uint16_t)msg.data[0] << 8) | msg.data[1];
-                const uint32_t t_ms = ((uint32_t)msg.data[2] << 24) |
-                                      ((uint32_t)msg.data[3] << 16) |
-                                      ((uint32_t)msg.data[4] << 8)  |
-                                      ((uint32_t)msg.data[5]);
+                if (msg->length < 6) break;
+                const uint16_t seq = ((uint16_t)msg->data[0] << 8) | msg->data[1];
+                const uint32_t t_ms = ((uint32_t)msg->data[2] << 24) |
+                                      ((uint32_t)msg->data[3] << 16) |
+                                      ((uint32_t)msg->data[4] << 8)  |
+                                      ((uint32_t)msg->data[5]);
                 printf("S %5u %8u ms |", seq, (unsigned)t_ms);
-                for (size_t i = 6; i < msg.length; i++) {
-                    printf(" %02X", msg.data[i]);
+                for (size_t i = 6; i < msg->length; i++) {
+                    printf(" %02X", msg->data[i]);
                 }
                 printf("\n");
                 break;
@@ -232,17 +239,17 @@ static void process_ecu_messages(Console *console) {
 
             // Core 0 never prints directly (see log.h) - it queues lines here.
             case MSG_LOG:
-                printf("%.*s\n", (int)msg.length, (const char *)msg.data);
+                printf("%.*s\n", (int)msg->length, (const char *)msg->data);
                 break;
 
             default:
-                printf("Unknown response type: %d\n", msg.messageType);
+                printf("Unknown response type: %d\n", msg->messageType);
                 break;
         }
     }
 }
 
-static bool read_console_input(Console *console) {
+void console_poll_input(void) {
     static char cmd_buffer[512];
     static int buf_pos = 0;
     int c;
@@ -251,28 +258,16 @@ static bool read_console_input(Console *console) {
         if (c == '\n' || c == '\r') {
             if (buf_pos > 0) {
                 cmd_buffer[buf_pos] = '\0';
-                process_command(console, cmd_buffer);
+                process_command(cmd_buffer);
                 buf_pos = 0;
-                return true;
+                return;
             }
         } else if (buf_pos < (int)sizeof(cmd_buffer) - 1 && c >= 32 && c <= 126) {
             cmd_buffer[buf_pos++] = (char)c;
         }
     }
-
-    return false;
 }
 
-void console_init(Console *console, RingBuffer *tx, RingBuffer *rx) {
-    console->rx_buffer = rx;
-    console->tx_buffer = tx;
-
-    command_init(tx);
-
+void console_init(void) {
     printf("Console ready. Type 'help' for commands.\n");
-}
-
-void console_update(Console *console) {
-    read_console_input(console);
-    process_ecu_messages(console);
 }

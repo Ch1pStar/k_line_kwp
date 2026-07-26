@@ -12,7 +12,7 @@ A companion project at `../../misc/logger_handler/` contains a 236-byte C166 ass
 
 Dual-core design on the RP2040:
 - **Core 0** (`ecu_state_machine.c`): K-Line init, KWP2000 packet send/receive, heartbeat keep-alive. Runs the ECU connection state machine, and the handler injection sequence (`me7_handler.c`) — every step there waits for the ECU's own reply before the next request goes out, so the sequence is paced by the ECU rather than by fixed sleeps.
-- **Core 1** (`console.c`): USB serial console — text parsing and printing only.
+- **Core 1** (`host.c`): owns both frontends and the single drain of core 0's message queue. The queue is SPSC, so exactly one place may pop it; each message is then fanned out to every frontend. `console.c` prints it, `host_link.c` frames it for the RPi 5.
 - **Command layer** (`command.c`): the single place that turns "do a thing to the ECU" into core 0 messages (handler loading, the `start-logging` sequence, raw frames). It knows nothing about how a command arrived or where its output goes — a frontend supplies a `CommandHost` (`report` + `pump` callbacks). The RPi 5 host link becomes a second frontend against this same interface.
 - **Inter-core comms** (`ring_buffer.c`): lock-free SPSC ring buffer, 128 messages of 128 bytes each. Exactly one core pushes and one pops a given buffer; `__dmb()` barriers order the payload copy against the index update. Message types live in `messages.h`.
 - **Logging** (`log.c`): core 0 must never `printf` — stdio_usb is not multicore-safe and can block for milliseconds mid-transaction. Core 0 calls `klog()`, which queues the line for core 1 to print and *drops* it if the queue is full (reporting the gap), so the K-line path never waits on the console.
@@ -25,7 +25,10 @@ Dual-core design on the RP2040:
 | K-Line TX | GPIO 15 (PIO1) |
 | Baud rate | 10,400 bps |
 | UART format | 8N1 via PIO (not hardware UART) |
-| Host interface | USB serial (stdio_usb) |
+| Host interface | USB serial (stdio_usb) — dedicated USB peripheral, not a UART |
+| RPi 5 link TX | GPIO 0 (uart0) |
+| RPi 5 link RX | GPIO 1 (uart0) |
+| RPi 5 link baud | 921,600 |
 
 ## Source Files
 
@@ -43,8 +46,11 @@ src/
     me7_handler.c / .h      - Handler injection sequence + logged variable list
     logger.c / .h           - Free-running sampler (core 0)
   host/
+    host.c / .h             - Core 1 entry: drains core 0's queue, fans out to frontends
     command.c / .h          - Frontend-agnostic command layer (CommandId -> messages)
-    console.c / .h          - Core 1 USB text console; parses text into Commands
+    console.c / .h          - USB text console frontend
+    host_link.c / .h        - RPi 5 binary link frontend (uart0)
+    proto.c / .h            - COBS + CRC16 framing, and its self-test
   ipc/
     ring_buffer.c / .h      - Inter-core message queue (SPSC, lock-free)
     messages.h              - Inter-core message type enum
@@ -113,6 +119,7 @@ read-log                 - Sample the logged variables once (bare 0xB7 -> 0xF7)
 stream-on[:MS]           - Start free-running sampling (default 100ms, 0 = full rate)
 stream-off               - Stop free-running sampling
 set-vars:HEX             - Replace the logged variable list (3-byte addresses)
+proto-test               - Run the host-link framing self-test (no ECU needed)
 cmd:XXXX                 - Send raw hex KWP2000 command (e.g., cmd:1A9B for ECU ID)
 raw:XXXX                 - Same as cmd: but dumps the unparsed reply bytes (debugging)
 heartbeat:MS             - Set keep-alive interval in ms (use ~2000 during logging)
@@ -157,6 +164,43 @@ gives up cleanly if that fails too. Reinstalling here is safe precisely *because
 returned SNS — the redirect is gone, so writes route through the ECU's own dispatcher (see
 the reinstall hazard above). Verified by restoring the BootRom pointer mid-stream: sampling
 resumed after a 4.4s gap with unbroken sequence numbers.
+
+## Host Link (`host/proto.c`, `host/host_link.c`)
+
+The RPi 5 link is uart0 on **GP0 (TX) / GP1 (RX) at 921600**, 8N1. Both boards are 3.3V,
+so TX/RX cross-connect plus a common ground needs no level shifting. These pins are free:
+the K-line is on GP15/GP18 via PIO, and the USB console uses the RP2040's dedicated USB
+peripheral — **USB serial does not consume a UART**.
+
+```
+frame   = COBS(payload) 0x00
+payload = [type][seq][data...][crc16:2]      CRC16-CCITT, poly 0x1021, init 0xFFFF
+```
+
+COBS removes 0x00 from the body, so a single zero byte delimits frames unambiguously. A
+receiver that joins mid-stream or loses bytes only has to scan to the next zero to
+resynchronise — no length field to misread, no escapes to get lost in. Corrupt frames fail
+the CRC and are dropped.
+
+| Type | Direction | Payload |
+|------|-----------|---------|
+| `SAMPLE 0x10` | to host | `[seq:2 BE][t_ms:4 BE][raw variable bytes]` |
+| `EVENT 0x11` | to host | link/ECU state change |
+| `LOG 0x12` | to host | ASCII log line |
+| `RESPONSE 0x13` | to host | raw KWP2000 response payload |
+| `CMD 0x20` | from host | `[CommandId][args]` — scalars are 4 bytes BE |
+| `ACK 0x21` | to host | `[CommandId][CommandStatus]` |
+
+Commands arrive as `CommandId` values and go through the same command layer as typed
+console commands, which is what phases 2 and 3 were for.
+
+**Verification status:** the framing is proven in software by `proto-test` (52 checks:
+round trips including all-zero and no-zero payloads, the maximum payload, single-bit
+corruption, mid-stream join, oversized-frame recovery, back-to-back frames). The harness
+itself was mutation-tested — swapping the CRC byte order on encode produced 12 failures,
+confirming it can actually fail. **The UART round-trip is untested**: nothing is wired to
+GP0/GP1 yet, so transmit goes into the void and receive has never seen a byte. Verify with
+a loopback jumper between GP0 and GP1, or against the RPi directly, before trusting it.
 
 ## KWP2000 Services Used
 

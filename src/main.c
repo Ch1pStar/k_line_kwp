@@ -2,7 +2,7 @@
 #include "pico/multicore.h"
 #include "pico/time.h"
 
-#include "console.h"
+#include "host.h"
 #include "ecu_state_machine.h"
 #include "ring_buffer.h"
 #include "log.h"
@@ -13,13 +13,13 @@ void core1_entry(void);
 static RingBuffer host_to_ecu_buffer;
 static RingBuffer ecu_to_host_buffer;
 
-// State machines
-static Console console;
 static ECUStateMachine ecu_sm;
 
 int main() {
     stdio_init_all();
-    setup_default_uart();
+    // No setup_default_uart(): with stdio-over-UART disabled it only did a
+    // legacy uart0 init at 115200 on GP0/GP1. host_link_init() configures that
+    // same peripheral for the RPi 5 link instead.
 
     ringbuffer_init(&host_to_ecu_buffer);
     ringbuffer_init(&ecu_to_host_buffer);
@@ -40,10 +40,10 @@ int main() {
 }
 
 void core1_entry(void) {
-    console_init(&console, &host_to_ecu_buffer, &ecu_to_host_buffer);
+    host_init(&host_to_ecu_buffer, &ecu_to_host_buffer);
 
     while (true) {
-        console_update(&console);
+        host_update();
         sleep_ms(1);
     }
 }

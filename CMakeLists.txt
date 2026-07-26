@@ -51,6 +51,9 @@ if (TARGET tinyusb_device)
         src/ecu/logger.c
         src/host/command.c
         src/host/console.c
+        src/host/host.c
+        src/host/host_link.c
+        src/host/proto.c
         src/ipc/ring_buffer.c
         src/ipc/log.c
     )
