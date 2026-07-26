@@ -29,6 +29,16 @@ typedef enum {
     PROTO_ACK      = 0x21,  // [status]
 } ProtoType;
 
+// PROTO_EVENT payload is [code][detail].
+//
+// Operation results live here rather than in PROTO_ACK because that frame means
+// "your command frame arrived" and carries [CommandId][CommandStatus]. Putting
+// both on one type made them genuinely ambiguous - a NACK reads identically to a
+// receipt for CommandId 1 - so a host could not sequence a startup reliably.
+#define PROTO_EVENT_LINK_LOST        0x01  // detail unused
+#define PROTO_EVENT_OPERATION_OK     0x02  // detail = first ACK data byte
+#define PROTO_EVENT_OPERATION_FAILED 0x03  // detail = error/status code
+
 typedef struct {
     uint8_t type;
     uint8_t seq;

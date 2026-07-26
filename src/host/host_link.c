@@ -56,19 +56,22 @@ void host_link_on_message(const BufferMessage *msg) {
             send_frame(PROTO_RESPONSE, msg->data, msg->length);
             break;
 
+        // The outcome of an operation, not a receipt for a command frame - see
+        // the event codes in proto.h for why the two are kept apart.
         case MSG_ACK:
         case MSG_NACK: {
-            const uint8_t status[2] = {
-                (uint8_t)(msg->messageType == MSG_ACK ? 0 : 1),
+            const uint8_t event[2] = {
+                (uint8_t)(msg->messageType == MSG_ACK ? PROTO_EVENT_OPERATION_OK
+                                                      : PROTO_EVENT_OPERATION_FAILED),
                 (uint8_t)(msg->length > 0 ? msg->data[0] : 0),
             };
-            send_frame(PROTO_ACK, status, sizeof(status));
+            send_frame(PROTO_EVENT, event, sizeof(event));
             break;
         }
 
         case MSG_ECU_DISCONNECTED: {
-            const uint8_t event = 0x01;  // link lost
-            send_frame(PROTO_EVENT, &event, 1);
+            const uint8_t event[2] = { PROTO_EVENT_LINK_LOST, 0 };
+            send_frame(PROTO_EVENT, event, sizeof(event));
             break;
         }
 

@@ -185,11 +185,24 @@ the CRC and are dropped.
 | Type | Direction | Payload |
 |------|-----------|---------|
 | `SAMPLE 0x10` | to host | `[seq:2 BE][t_ms:4 BE][raw variable bytes]` |
-| `EVENT 0x11` | to host | link/ECU state change |
+| `EVENT 0x11` | to host | `[code][detail]` — see event codes below |
 | `LOG 0x12` | to host | ASCII log line |
 | `RESPONSE 0x13` | to host | raw KWP2000 response payload |
 | `CMD 0x20` | from host | `[CommandId][args]` — scalars are 4 bytes BE |
-| `ACK 0x21` | to host | `[CommandId][CommandStatus]` |
+| `ACK 0x21` | to host | `[CommandId][CommandStatus]` — receipt for a command frame **only** |
+
+Event codes (`proto.h`): `0x01` link lost, `0x02` operation ok, `0x03` operation failed.
+Operation outcomes are events rather than `ACK`s because `ACK` means "your command frame
+arrived". Carrying both meanings on one type was genuinely ambiguous — a NACK was
+indistinguishable from a receipt for `CommandId` 1 — which left a host unable to
+sequence a startup.
+
+**The other end of this link is `../pi-dash/`** — a Node bridge (`pi-dash/server/`)
+that decodes these frames, applies `.ecu` scaling and feeds a PIXI dashboard. Its
+`proto.ts` is a port of `src/host/proto.c` and is held to it by vectors generated from
+this very C file (`pi-dash/server/test/vectorgen.c` links it). **If you change the framing
+here, regenerate those vectors or the bridge will silently disagree.** See
+`pi-dash/CLAUDE.md`.
 
 Commands arrive as `CommandId` values and go through the same command layer as typed
 console commands, which is what phases 2 and 3 were for.
