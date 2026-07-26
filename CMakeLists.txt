@@ -57,7 +57,8 @@ if (TARGET tinyusb_device)
         src/log.c
         src/main.c
         src/ring_buffer.c
-        src/dashboard.c
+        src/command.c
+        src/console.c
         src/ecu_state_machine.c
     )
 

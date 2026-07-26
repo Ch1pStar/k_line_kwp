@@ -12,7 +12,8 @@ A companion project at `../../misc/logger_handler/` contains a 236-byte C166 ass
 
 Dual-core design on the RP2040:
 - **Core 0** (`ecu_state_machine.c`): K-Line init, KWP2000 packet send/receive, heartbeat keep-alive. Runs the ECU connection state machine.
-- **Core 1** (`dashboard.c`): USB serial console UI, command parsing, handler binary loading. User-facing interface.
+- **Core 1** (`console.c`): USB serial console — text parsing and printing only.
+- **Command layer** (`command.c`): the single place that turns "do a thing to the ECU" into core 0 messages (handler loading, the `start-logging` sequence, raw frames). It knows nothing about how a command arrived or where its output goes — a frontend supplies a `CommandHost` (`report` + `pump` callbacks). The RPi 5 host link becomes a second frontend against this same interface.
 - **Inter-core comms** (`ring_buffer.c`): lock-free SPSC ring buffer, 128 messages of 128 bytes each. Exactly one core pushes and one pops a given buffer; `__dmb()` barriers order the payload copy against the index update. Message types live in `messages.h`.
 - **Logging** (`log.c`): core 0 must never `printf` — stdio_usb is not multicore-safe and can block for milliseconds mid-transaction. Core 0 calls `klog()`, which queues the line for core 1 to print and *drops* it if the queue is full (reporting the gap), so the K-line path never waits on the console.
 
@@ -36,7 +37,8 @@ src/
   kline.c / kline.h      - 5-baud slow init (0x88 wakeup), sync/key byte handshake
   kwp2000.c / kwp2000.h  - Packet framing, checksum, send/receive, DTC parsing
   ecu_state_machine.c/h  - Core 0 state machine (IDLE -> CONNECTING -> CONNECTED)
-  dashboard.c / dashboard.h - Core 1 console commands, handler loading
+  command.c / command.h  - Frontend-agnostic command layer (CommandId -> messages)
+  console.c / console.h  - Core 1 USB text console; parses text into Commands
   ring_buffer.c / ring_buffer.h - Inter-core message queue (SPSC, lock-free)
   messages.h             - Inter-core message type enum
   log.c / log.h          - klog(): core 0 logging via the message queue
