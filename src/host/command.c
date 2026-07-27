@@ -95,6 +95,15 @@ CommandStatus command_execute(const Command *cmd) {
             return queue(&msg);
         }
 
+        case CMD_DUMP_MEMORY: {
+            BufferMessage msg = {
+                .messageType = MSG_DUMP_MEMORY,
+                .length = cmd->payload_length,
+            };
+            memcpy(msg.data, cmd->payload, cmd->payload_length);
+            return queue(&msg);
+        }
+
         case CMD_RAW_KWP:
             return queue_kwp(cmd->payload, cmd->payload_length);
 

@@ -170,6 +170,60 @@ static void ecu_send_raw(ECUStateMachine *sm, const BufferMessage *msg) {
     ringbuffer_push(sm->tx_buffer, &ack);
 }
 
+// Read a block of ECU memory and log it as a hex dump.
+//
+// An exploration tool: the .ecu file names 750 variables but is silent about
+// everything else in the segment, and "not named by ME7Info" is not the same as
+// "unused". Reading it is how you find out.
+//
+// 48 bytes per request keeps the response inside a short KWP frame
+// (1 + 48 = 49 <= 0x3F).
+#define DUMP_CHUNK 48
+#define DUMP_MAX_FAILURES 4
+
+static void ecu_dump_memory(ECUStateMachine *sm, uint32_t address, uint32_t length) {
+    klog("dump: 0x%06X + %u bytes", (unsigned)address, (unsigned)length);
+
+    uint32_t failures = 0;
+
+    for (uint32_t offset = 0; offset < length; offset += DUMP_CHUNK) {
+        uint32_t chunk = length - offset;
+        if (chunk > DUMP_CHUNK) chunk = DUMP_CHUNK;
+
+        const uint32_t at = address + offset;
+
+        KWP2000Service request = { .serviceId = 0x23, .dataLength = 4 };
+        request.dataBytes[0] = (at >> 16) & 0xFF;
+        request.dataBytes[1] = (at >> 8) & 0xFF;
+        request.dataBytes[2] = at & 0xFF;
+        request.dataBytes[3] = (uint8_t)chunk;
+
+        KWP2000Response response;
+        const ResponseStatus status = kwp2000_execute(&request, &response, true);
+
+        if (status != RESPONSE_OK) {
+            klog("dump: 0x%06X -> %s", (unsigned)at, kwp2000_status_name(status));
+            if (++failures >= DUMP_MAX_FAILURES) {
+                klog("dump: giving up after %u failures", (unsigned)failures);
+                break;
+            }
+            continue;
+        }
+
+        for (size_t i = 0; i < response.dataSize; i += 16) {
+            char hex[16 * 3 + 1] = "";
+            size_t n = 0;
+            for (size_t j = i; j < i + 16 && j < response.dataSize; j++) {
+                n += snprintf(hex + n, sizeof(hex) - n, "%02X ", response.data[j]);
+            }
+            klog("%06X  %s", (unsigned)(at + i), hex);
+        }
+    }
+
+    sm->last_activity = to_ms_since_boot(get_absolute_time());
+    klog("dump: done");
+}
+
 static void ecu_check_connection(ECUStateMachine *sm) {
     if (!sm->connected) return;
 
@@ -303,6 +357,21 @@ static void ecu_process_messages(ECUStateMachine *sm) {
 
             case MSG_STOP_STREAM:
                 logger_stop("requested");
+                break;
+
+            case MSG_DUMP_MEMORY:
+                if (!sm->connected) {
+                    klog("Cannot dump memory - ECU not connected");
+                    break;
+                }
+                if (msg.length >= 5) {
+                    const uint32_t address = ((uint32_t)msg.data[0] << 16) |
+                                             ((uint32_t)msg.data[1] << 8) |
+                                             ((uint32_t)msg.data[2]);
+                    const uint32_t length = ((uint32_t)msg.data[3] << 8) |
+                                            ((uint32_t)msg.data[4]);
+                    ecu_dump_memory(sm, address, length);
+                }
                 break;
 
             case MSG_SET_LOG_VARS:

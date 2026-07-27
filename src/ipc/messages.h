@@ -32,4 +32,5 @@ typedef enum {
     MSG_START_STREAM        = 0x10,  // core1 -> core0: 4 bytes BE interval ms
     MSG_STOP_STREAM         = 0x11,  // core1 -> core0
     MSG_SET_LOG_VARS        = 0x12,  // core1 -> core0: flat 3-byte addresses
+    MSG_DUMP_MEMORY         = 0x13,  // core1 -> core0: [addr:3][length:2 BE]
 } MessageType;

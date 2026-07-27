@@ -26,6 +26,7 @@ typedef enum {
     CMD_STREAM_START,            // value = sample interval in ms (0 = full rate)
     CMD_STREAM_STOP,
     CMD_SET_LOG_VARS,            // payload = flat list of 3-byte ECU addresses
+    CMD_DUMP_MEMORY,             // payload = [addr:3][length:2 BE]
     CMD_RAW_KWP,                 // payload = KWP frame, reply parsed normally
     CMD_RAW_DUMP,                // payload = KWP frame, reply dumped verbatim
     CMD_SET_HEARTBEAT,           // value = interval in ms

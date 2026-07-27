@@ -27,6 +27,7 @@ static void print_help(void) {
     printf("stream-on[:MS]   - Start free-running sampling (default 100ms, 0 = full rate)\n");
     printf("stream-off       - Stop free-running sampling\n");
     printf("set-vars:HEX     - Set logged variables (3-byte addresses, e.g. 00F89A380A32)\n");
+    printf("dump:ADDR:LEN    - Hex dump ECU memory (hex addr, decimal length)\n");
     printf("cmd:XXXX         - Send raw KWP2000 command (hex)\n");
     printf("raw:XXXX         - Same, but dump the unparsed reply bytes\n");
     printf("heartbeat:MS     - Set keep-alive interval in ms\n");
@@ -123,6 +124,31 @@ static bool parse_command(const char *text, Command *out) {
             return false;
         }
         printf("Setting %u logged variable(s)\n", out->payload_length / 3);
+        return true;
+    }
+
+    // "dump:387A00:256" - read a block of ECU memory as a hex dump
+    if (strncmp(text, "dump:", 5) == 0) {
+        const char *colon = strchr(text + 5, ':');
+        if (colon == NULL) {
+            printf("Error: usage dump:ADDR:LEN, e.g. dump:387A00:256\n");
+            return false;
+        }
+        const uint32_t address = (uint32_t)strtoul(text + 5, NULL, 16);
+        const uint32_t length = (uint32_t)strtoul(colon + 1, NULL, 10);
+        if (length == 0 || length > 0xFFFF) {
+            printf("Error: length must be 1..65535\n");
+            return false;
+        }
+
+        out->id = CMD_DUMP_MEMORY;
+        out->payload[0] = (address >> 16) & 0xFF;
+        out->payload[1] = (address >> 8) & 0xFF;
+        out->payload[2] = address & 0xFF;
+        out->payload[3] = (length >> 8) & 0xFF;
+        out->payload[4] = length & 0xFF;
+        out->payload_length = 5;
+        printf("Dumping %u bytes from 0x%06X\n", (unsigned)length, (unsigned)address);
         return true;
     }
 

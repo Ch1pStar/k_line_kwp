@@ -4,9 +4,46 @@
 
 A Raspberry Pi Pico (RP2040) firmware that communicates with Bosch ME7.5 automotive ECUs over the K-Line bus using KWP2000 (ISO 14230). The end goal is injecting a custom fast-logging handler into ECU RAM to enable high-speed multi-variable datalogging.
 
-A companion project at `../../misc/logger_handler/` contains a 236-byte C166 assembly handler (`fastlogging_ramhandler`) whose source describes a **0xBE / 0xFE** service. **That is not the binary this project actually uses.** `load-handler`/`start-logging` inject `handler_setzi.bin` (582 bytes), a different build of the same idea that responds on **0xB7 / 0xF7**. The 0xBE references throughout the older docs are for the other variant — see `KWP2000_COMMAND_REFERENCE.md`.
+### Two handlers, and which one we use
 
-**Status (2026-07-26): fast logging works end to end.** `connect` -> `start-logging` -> `read-log` returns live multi-variable data (verified: battery voltage matched the bench supply, coolant temp matched room temperature). See "What Was Wrong" below for the bugs that were blocking it.
+| | in use today | the alternative |
+|---|---|---|
+| Binary | `handler_setzi.bin`, 582 bytes | `fastlogging_ramhandler`, 236 bytes |
+| Service | **0xB7 / 0xF7** | 0xBE / 0xFE |
+| Source | **none — binary blob only** | **full C166 assembly + Keil project** |
+| Where | this repo | `../../misc/logger_handler/` (git repo, GPLv3, README) |
+
+`load-handler` / `start-logging` inject the **setzi** binary, and that is what all of this
+project's testing is against. The 0xBE references in older docs belong to the other variant.
+
+**Future intent (noted 2026-07-27): move to the `logger_handler` version, because it has
+source.** A binary blob executing inside a running engine controller is something you
+cannot audit, fix or extend; the assembly version can be read, modified and rebuilt. The
+source is already targeted at *this* ECU — `orgdistadr 0xA7D0` + `orgdistseg 0x81` is the
+far pointer `0x81A7D0`, exactly the BootRom service table this ECU has at `0xE228`, and
+`newdist 0x7A00` is the same `0x387A00` we load to. There is a built `.bin` in its
+`Objects/`. Not a small switch — different SID, and the variable list is passed as a
+*pointer to an array written into RAM* rather than inline in the request (entries are
+`[length][3-byte addr]`, terminated by `0x00`) — so it stays on the list rather than in
+progress. **Nothing is broken; this is a deliberate "when there is time" item.**
+
+**Status (2026-07-27): fast logging works end to end, at 57600 baud.**
+`connect` -> `start-logging` -> `stream-on` streams live multi-variable data. Measured on
+the bench: **20 variables at 63.8 samples/s**, 24 variables at 57.7/s, with the ECU's own
+CPU load rising only ~3.7 points. The host half (bridge + PIXI dashboard) lives in
+`../pi-dash` — read its `CLAUDE.md` too.
+
+Getting from ~20/s to ~64/s took three things, each of which this project had previously
+recorded as impossible or dangerous. If you read an old note that contradicts the ones
+below, trust the newer one:
+
+1. **Send AccessTimingParameter** (`83 03 00 01 00 14 00`). Docs here used to say it wedges
+   the session. It does not, and it is worth 2.4x on its own.
+2. **Switch the K-line to 57600** (`10 86 64`), immediately after the 5-baud handshake.
+3. **Extended-length frames on transmit**, which lifted the variable list past 20 and the
+   handler write from 73 requests to 5.
+
+See "What Was Wrong" for the older round of bugs.
 
 ## Architecture
 
@@ -119,6 +156,7 @@ read-log                 - Sample the logged variables once (bare 0xB7 -> 0xF7)
 stream-on[:MS]           - Start free-running sampling (default 100ms, 0 = full rate)
 stream-off               - Stop free-running sampling
 set-vars:HEX             - Replace the logged variable list (3-byte addresses)
+dump:ADDR:LEN            - Hex dump ECU memory (hex address, decimal length)
 proto-test               - Run the host-link framing self-test (no ECU needed)
 cmd:XXXX                 - Send raw hex KWP2000 command (e.g., cmd:1A9B for ECU ID)
 raw:XXXX                 - Same as cmd: but dumps the unparsed reply bytes (debugging)
@@ -375,6 +413,43 @@ Measured with 20 variables / 28-byte samples:
 | 10400 | defaults | ~10/s |
 | 10400 | zeroed | 24.9/s |
 | **57600** | **zeroed** | **63.8/s** |
+
+## ECU RAM map
+
+Established by dumping (`dump:ADDR:LEN`) on 2026-07-27. Relevant if you want to put
+anything of your own in RAM — tuning tables, a bigger handler, scratch space.
+
+**Segment 038h holds exactly 32 KB: `0x380000` – `0x387FFF`.** Reads at `0x388000` and
+above are refused with a negative response, and `0x387FFF` reads fine, so the boundary is
+hard and clean.
+
+| Range | What is there |
+|-------|---------------|
+| `0x380000` – `0x38081A` | below the lowest named variable |
+| `0x38081A` – `0x3852DE` | the 562 named variables from the `.ecu` file |
+| `0x3852DE` – ~`0x386000` | **not empty.** Live values, just unnamed by ME7Info |
+| ~`0x386000` – `0x3879FF` | reads back mostly `0xFF` with scattered cleared bits |
+| `0x387A00` – `0x387C46` | **our handler** (582 bytes) |
+| `0x387C46` – `0x387FFF` | mostly zeros, ~950 bytes to the top of RAM |
+| `0x388000` +            | **refused** — past the end of RAM |
+
+The other populated region is `0x00E3DB` – `0x00FDBA` (188 named variables), which is the
+C167's internal RAM and SFR area. Small and busy; not somewhere to put tables.
+
+**Two cautions before treating any of this as free:**
+
+1. **A gap in the `.ecu` file is not free memory.** That file lists what ME7Info could
+   name, nothing more. The dump at `0x385300` — immediately past the last named variable —
+   came back full of live values, including `0E 5E` (24078, the same ambient-pressure
+   reading the logger sees). The largest gaps *between* named variables (2374 bytes at
+   `0x380EFE`, 1976 at `0x384058`, 1826 at `0x384B8A`) are very likely occupied too.
+2. **`0xFF` does not prove unbacked.** The `0xFF`-with-scattered-zeros pattern around
+   `0x386000` looks like a floating bus, but that is inference, not proof.
+
+**The only sound test is empirical:** write a pattern with `0x3D`, run the engine, read it
+back and see whether it survived. The handler itself is the existing proof by example —
+582 bytes at `0x387A00` persist and execute — which is presumably why both handler
+projects chose that address.
 
 ## ECU CPU load
 
