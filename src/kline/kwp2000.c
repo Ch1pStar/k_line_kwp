@@ -59,8 +59,26 @@ static size_t send_packet(const KWP2000Packet *packet, bool silent) {
     return frame_len;
 }
 
+// A request's length lives in the low 6 bits of the format byte, so a frame can
+// carry at most 63 bytes without the extended-length form (format byte 0, then a
+// separate length byte). We only implement the short form on transmit.
+//
+// Silently exceeding it is nasty: 64 becomes 0x40, which the ECU reads as
+// "address information follows, length 0" and the request is misparsed into
+// nothing. A 22-variable 0xB7 list did exactly that and looked like the ECU had
+// simply stopped answering.
+#define MAX_REQUEST_LENGTH 0x3F
+
 size_t kwp2000_send(const KWP2000Service *service, bool silent) {
     KWP2000Packet packet;
+
+    if (1 + service->dataLength > MAX_REQUEST_LENGTH) {
+        klog("Request of %u bytes exceeds the %u byte frame limit - not sent. "
+             "Extended-length format is not implemented on transmit.",
+             (unsigned)(1 + service->dataLength), (unsigned)MAX_REQUEST_LENGTH);
+        return 0;
+    }
+
     packet.length = 1 + service->dataLength;
     packet.serviceId = service->serviceId;
     for (size_t i = 0; i < service->dataLength; ++i) {
