@@ -23,17 +23,17 @@ extern unsigned char _binary_handler_setzi_bin_end[];
 // Where the handler lives in ECU RAM (segment #038h).
 #define HANDLER_RAM_ADDRESS 0x387A00
 
-// WriteMemoryByAddress payload size. 8 is what this bench has proven; the
-// reference JS uses 0x80 and would cut the write from 73 requests to 5, which
-// is worth trying once the sampler makes reinstall latency matter.
-#define WRITE_CHUNK_SIZE 8
+// WriteMemoryByAddress payload size. 128 is what the reference uses, and needs
+// the extended-length frame header (1 + 3 + 1 + 128 = 133 bytes). It turns the
+// 582-byte handler write from 73 requests into 5.
+#define WRITE_CHUNK_SIZE 128
 
-// Give up on the load rather than spend 100ms of timeout per chunk for all 73
-// when the link has actually gone away.
-#define MAX_CONSECUTIVE_FAILURES 4
+// Give up on the load rather than time out on every remaining chunk when the
+// link has actually gone away. Only a handful of chunks now, so fail fast.
+#define MAX_CONSECUTIVE_FAILURES 2
 
-// Progress line every this many chunks - one per chunk would be 73 log lines.
-#define PROGRESS_EVERY 24
+// Progress line every this many chunks.
+#define PROGRESS_EVERY 2
 
 typedef enum {
     EXPECT_POSITIVE,   // anything but a positive reply is a failure

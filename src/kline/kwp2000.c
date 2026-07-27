@@ -24,9 +24,26 @@ static uint8_t calculate_checksum(const KWP2000Service *service) {
 }
 
 // Flatten the packet into the exact byte sequence that goes on the wire.
+//
+// Two header forms, per ISO 14230-2:
+//
+//   short     [Fmt|len]            SID data... CS     len <= 0x3F
+//   extended  [Fmt=0x00] [Len]     SID data... CS     len <= 0xFF
+//
+// The format byte carries the length in its low 6 bits; zero there means the
+// real length follows in its own byte. The extended form is what the reference
+// implementation uses for its 128-byte handler writes (`00 85 3d 38 7a 00 80 ...`).
+//
+// Note the checksum is unchanged between the two: it sums every byte ahead of
+// it, and the extra header byte is 0x00.
 static size_t build_frame(const KWP2000Packet *packet, uint8_t *out) {
     size_t n = 0;
+
+    if (packet->length > KWP_SHORT_FRAME_MAX) {
+        out[n++] = 0x00;
+    }
     out[n++] = packet->length;
+
     out[n++] = packet->serviceId;
     for (size_t i = 0; i + 1 < packet->length; ++i) {
         out[n++] = packet->dataBytes[i];
@@ -40,7 +57,7 @@ static size_t build_frame(const KWP2000Packet *packet, uint8_t *out) {
 // (~9 bytes including the shift register) and silently drops echo bytes, which
 // desynchronises every field of the reply. Read each byte back as we send it.
 static size_t send_packet(const KWP2000Packet *packet, bool silent) {
-    uint8_t frame[MAX_DATA_SIZE + 4];
+    uint8_t frame[MAX_DATA_SIZE + 8];  // fmt + len + SID + data + checksum
     const size_t frame_len = build_frame(packet, frame);
 
     for (size_t i = 0; i < frame_len; ++i) {
@@ -59,27 +76,20 @@ static size_t send_packet(const KWP2000Packet *packet, bool silent) {
     return frame_len;
 }
 
-// A request's length lives in the low 6 bits of the format byte, so a frame can
-// carry at most 63 bytes without the extended-length form (format byte 0, then a
-// separate length byte). We only implement the short form on transmit.
-//
-// Silently exceeding it is nasty: 64 becomes 0x40, which the ECU reads as
-// "address information follows, length 0" and the request is misparsed into
-// nothing. A 22-variable 0xB7 list did exactly that and looked like the ECU had
-// simply stopped answering.
-#define MAX_REQUEST_LENGTH 0x3F
-
 size_t kwp2000_send(const KWP2000Service *service, bool silent) {
     KWP2000Packet packet;
 
-    if (1 + service->dataLength > MAX_REQUEST_LENGTH) {
-        klog("Request of %u bytes exceeds the %u byte frame limit - not sent. "
-             "Extended-length format is not implemented on transmit.",
-             (unsigned)(1 + service->dataLength), (unsigned)MAX_REQUEST_LENGTH);
+    // The length is one byte wherever it lives, so SID + data cannot exceed 255.
+    // Frames over KWP_SHORT_FRAME_MAX go out in the extended form; see
+    // build_frame. Before that existed, a 64-byte request went out as 0x40 and
+    // the ECU read it as "address information follows, length 0".
+    if (1 + service->dataLength > KWP_MAX_FRAME_LENGTH) {
+        klog("Request of %u bytes exceeds the %u byte maximum - not sent",
+             (unsigned)(1 + service->dataLength), (unsigned)KWP_MAX_FRAME_LENGTH);
         return 0;
     }
 
-    packet.length = 1 + service->dataLength;
+    packet.length = (uint8_t)(1 + service->dataLength);
     packet.serviceId = service->serviceId;
     for (size_t i = 0; i < service->dataLength; ++i) {
         packet.dataBytes[i] = service->dataBytes[i];

@@ -5,7 +5,15 @@
 #include <stdbool.h>
 
 #define MAX_DATA_SIZE 255
-#define MAX_RESPONSE_SIZE 80
+
+// Largest length expressible in the format byte's 6-bit length field. Above
+// this a frame must use the extended header (format byte 0x00 + length byte).
+#define KWP_SHORT_FRAME_MAX 0x3F
+
+// The length byte itself is 8 bits, so SID + data cannot exceed 255.
+#define KWP_MAX_FRAME_LENGTH 0xFF
+// Matches MAX_MESSAGE_SIZE: a response is forwarded to core 1 in one message.
+#define MAX_RESPONSE_SIZE 128
 #define MAX_DTC_COUNT 255
 
 // ReadDTCByStatus request service id (positive response is 0x58)

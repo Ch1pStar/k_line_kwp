@@ -323,11 +323,27 @@ Measured on the bench, all at 10400 baud with timing parameters set:
 |--------|-----------|------|--------|
 | 5 bytes | 5 | 49.8/s | 20ms |
 | 10 bytes | 8 | 45.4/s | 22ms |
-| 28 bytes | 20 | 24.9/s | 40ms |
+| 28 bytes | 20 | 24.9/s |
+| 35 bytes | 24 | 57.7/s (at 57600) | 40ms |
 
 Above ~10 bytes the marginal cost is ~1ms per byte, which is simply the 10400 baud wire
 time (0.96ms/byte), on top of ~6ms of fixed overhead — so the second lever is the baud
 rate.
+
+### Extended-length frames
+
+A request's length lives in the low 6 bits of the format byte, so the short header caps a
+frame at 63 bytes. `build_frame()` emits the **extended header** (`Fmt = 0x00`, then a full
+length byte) above that, which raises the ceiling to 255 and is exactly what the reference
+sends for its handler writes (`00 85 3d 38 7a 00 80 ...`). The checksum is identical either
+way — the extra header byte is zero.
+
+Two things this unlocked:
+
+- **Handler writes use 128-byte chunks**: 582 bytes in **5 requests instead of 73**.
+- **More than 20 logged variables.** 20 was not a choice, it was `(63 - 2) / 3`. Verified to
+  24 on the bench (a 74-byte request); `ME7_MAX_LOG_VARS` is 32, now bounded by
+  `MAX_MESSAGE_SIZE` rather than the KWP header.
 
 ## Sample Rate: switch the K-line to 57600
 

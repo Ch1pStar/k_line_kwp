@@ -4,14 +4,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Capped by the KWP2000 frame limit, not by the ECU. The 0xB7 request is
-// [SID][format][3 bytes per variable], and a request's length field is 6 bits,
-// so 63 bytes total => (63 - 2) / 3 = 20 variables. Going over produces a frame
-// the ECU silently misparses (see MAX_REQUEST_LENGTH in kwp2000.c).
-//
-// The ECU itself allows far more - ME7Logger documents 254 bytes - and so would
-// we, once the extended-length format is implemented on transmit.
-#define ME7_MAX_LOG_VARS 20
+// With extended-length frames the 0xB7 request is no longer the constraint (it
+// could carry 84 variables). The binding limit is now MAX_MESSAGE_SIZE: the
+// address list crosses to core 0 as a single message payload of 3 bytes per
+// variable. 32 keeps the sample within MAX_RESPONSE_SIZE too, at 64 bytes if
+// every variable were 2 bytes wide.
+#define ME7_MAX_LOG_VARS 32
 #define ME7_ADDRESS_BYTES 3
 
 // Injection of the ME7.5 fast-logging RAM handler (handler_setzi.bin).
