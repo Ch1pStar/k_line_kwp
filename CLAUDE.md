@@ -360,6 +360,43 @@ Measured with 20 variables / 28-byte samples:
 | 10400 | zeroed | 24.9/s |
 | **57600** | **zeroed** | **63.8/s** |
 
+## ECU CPU load
+
+The ECU reports its own utilisation, so this is measurable rather than a matter of opinion:
+**`perffilt_w`** (`0x382700`, 2 bytes, 0.025 %/bit, "Gefilterte Rechnerauslastung") and
+**`perfmax_w`** (`0x383AF2`, max hold). Log `perffilt_w` alongside everything else and the
+dash tells you what the logging is costing.
+
+Measured on the bench, engine off:
+
+| Condition | Requests/s | Wire bytes/s | `perffilt_w` |
+|-----------|-----------|--------------|--------------|
+| No logging (baseline) | 0 | 0 | 60.1 % |
+| 20 variables @ 5 Hz | 5 | ~180 | 60.4 % |
+| 2 variables @ 100 Hz | 100 | ~1000 | 62.2 % |
+| 20 variables @ 56 Hz | 56 | ~2000 | 63.8 % |
+
+`perfmax_w` never moved off its 64.7 % baseline in any condition — logging never set a new
+peak.
+
+**The cost tracks bytes on the wire, at roughly 0.18 % CPU per 100 bytes/s**, and is
+consistent across all three conditions. It is *not* the handler: `fastarrayloop` in
+`logger_handler/fastlogging_ramhandler.a66` is ~8 instructions per variable plus ~5 per
+byte, so a 20-variable request is ~300 instructions, tens of microseconds, well under 0.2 %
+even at full rate. What costs is the ECU's serial stack — the per-byte interrupt and
+message assembly.
+
+**Which makes the sample rate the expensive axis and the variable count the cheap one.**
+At 25 Hz, one extra logged byte costs about 0.05 %; doubling the rate doubles everything.
+That is exactly why the handler exists: `logger_handler/README.md` notes that plain `$23`
+manages 50 Hz for a *single* variable, so 25 variables would be 2 Hz. One request returning
+everything is the efficient shape.
+
+For driving, prefer a bounded rate (25–30 Hz is far beyond what a dashboard shows) over
+full rate, and keep `perffilt_w` in the logged set as a live check. Note the baseline above
+is with the **engine off**; under load the ECU's own baseline is much higher, so the
+headroom is smaller even though the logging delta should be similar.
+
 ## Logging Variable Format
 
 **0xB7 handler (working, `handler_setzi.bin`):** the request is `0xB7` + one format
