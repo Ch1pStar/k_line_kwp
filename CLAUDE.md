@@ -161,7 +161,8 @@ proto-test               - Run the host-link framing self-test (no ECU needed)
 cmd:XXXX                 - Send raw hex KWP2000 command (e.g., cmd:1A9B for ECU ID)
 raw:XXXX                 - Same as cmd: but dumps the unparsed reply bytes (debugging)
 heartbeat:MS             - Set keep-alive interval in ms (use ~2000 during logging)
-baud:N                   - Set K-line bit rate at runtime (10400 is the working rate)
+baud:N                   - Set K-line bit rate at runtime (connect handles this;
+                           the session moves itself to 57600)
 ```
 
 ### Fast logging: the normal flow
@@ -538,11 +539,14 @@ heartbeat must **not** disconnect on it — only a true `RESPONSE_ERROR` indicat
 
 | Constant | Value |
 |----------|-------|
-| SERIAL_BAUD | 10,400 |
+| SERIAL_BAUD | 10,400 (init) |
+| LOGGING_BAUD | 57,600 (after `10 86 64`) |
 | PIO_RX_PIN | 18 |
 | PIO_TX_PIN | 15 |
 | MAX_DATA_SIZE | 255 |
-| MAX_RESPONSE_SIZE | 80 |
+| KWP_SHORT_FRAME_MAX | 0x3F (above this, extended header) |
+| ME7_MAX_LOG_VARS | 32 |
+| MAX_RESPONSE_SIZE | 128 |
 | RING_BUFFER_SIZE | 128 |
 | MAX_MESSAGE_SIZE | 128 |
 | DEFAULT_HEARTBEAT_INTERVAL_MS | 5000 |
