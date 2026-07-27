@@ -23,7 +23,7 @@ Dual-core design on the RP2040:
 |-------------|-------|
 | K-Line RX | GPIO 18 (PIO0) |
 | K-Line TX | GPIO 15 (PIO1) |
-| Baud rate | 10,400 bps |
+| Baud rate | 10,400 bps for init, 57,600 during logging |
 | UART format | 8N1 via PIO (not hardware UART) |
 | Host interface | USB serial (stdio_usb) — dedicated USB peripheral, not a UART |
 | RPi 5 link TX | GPIO 0 (uart0) |
@@ -326,9 +326,39 @@ Measured on the bench, all at 10400 baud with timing parameters set:
 | 28 bytes | 20 | 24.9/s | 40ms |
 
 Above ~10 bytes the marginal cost is ~1ms per byte, which is simply the 10400 baud wire
-time (0.96ms/byte), on top of ~6ms of fixed overhead. **The next lever is baud rate**:
-ME7Logger defaults to 56000 and its docs quote up to 50 samples/s. At 56000 the same
-28-byte sample would be bounded by ~12ms, i.e. ~80/s. Nothing has switched baud yet.
+time (0.96ms/byte), on top of ~6ms of fixed overhead — so the second lever is the baud
+rate.
+
+## Sample Rate: switch the K-line to 57600
+
+`10 86 64` is StartDiagnosticSession with **baud identifier 0x64 = 57600**. The ECU answers
+at the old rate and switches afterwards, so the Pico follows it (`uart_set_baud`). With 20
+variables this takes **24.9 -> 63.8 samples/s**, and 2854 consecutive samples were logged
+with zero checksum failures, echo mismatches or timeouts.
+
+**It only works immediately after the 5-baud handshake.** Sent a few seconds later — for
+example typed through the console — it simply times out. `ecu_try_connect()` therefore
+calls `me7_handler_open_fast_session()` the instant the init returns 0xEE, before anything
+else can get in the way. A refusal is not fatal: the link stays at 10400 and everything
+still works, just slower.
+
+Two consequences worth knowing:
+
+- **`kline_init_connection()` resets the rate to 10400 first.** The 5-baud wakeup is
+  bit-banged and rate independent, but the sync and key bytes that follow are not, so a
+  reconnect after a fast session would otherwise read garbage.
+- **The install must not send a second `10 86`.** That is another
+  StartDiagnosticSession: it would drop the rate back to 10400 *and* reset the timing
+  parameters. `me7_handler_install()` skips its own session step when the fast session is
+  already open.
+
+Measured with 20 variables / 28-byte samples:
+
+| K-line rate | Timing parameters | Rate |
+|-------------|-------------------|------|
+| 10400 | defaults | ~10/s |
+| 10400 | zeroed | 24.9/s |
+| **57600** | **zeroed** | **63.8/s** |
 
 ## Logging Variable Format
 

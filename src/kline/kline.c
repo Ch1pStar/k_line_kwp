@@ -41,6 +41,13 @@ static void wakeup_slow(void) {
 }
 
 uint32_t kline_init_connection(void) {
+    // Always start an init at the standard rate. A previous session may have
+    // switched the K-line to a faster logging rate (StartDiagnosticSession with
+    // a baud identifier); the 5-baud wakeup itself is bit-banged and so rate
+    // independent, but the sync and key bytes that follow are not, and reading
+    // them at the old session's rate returns garbage.
+    uart_set_baud(SERIAL_BAUD);
+
     // Take the TX pin back from the PIO. A previous connect left it under PIO
     // control, and the wakeup below drives it with gpio_put, which the PIO
     // silently overrides - so without this every connect after the first sends

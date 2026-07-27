@@ -19,6 +19,13 @@
 // The whole sequence is a continuous stream of requests, so it keeps the KWP
 // session alive on its own while it runs.
 
+// Open the manufacturer session and switch the K-line to the faster logging
+// rate (10 86 64 -> 57600 baud). Must be called immediately after the 5-baud
+// init; the ECU only accepts it in a short window after the handshake. Returns
+// false if the ECU refused, in which case the link stays at 10400 and
+// everything still works, just slower.
+bool me7_handler_open_fast_session(void);
+
 // Write the handler blob into ECU RAM. Assumes a diagnostic session is already
 // open (install() does that itself).
 bool me7_handler_load(void);

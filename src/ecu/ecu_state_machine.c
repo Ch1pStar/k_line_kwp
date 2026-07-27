@@ -45,6 +45,11 @@ static bool ecu_try_connect(ECUStateMachine *sm) {
         sm->last_activity = to_ms_since_boot(get_absolute_time());
         sm->state = ECU_STATE_CONNECTED;
 
+        // Immediately, while the ECU still accepts it: open the session and
+        // move the K-line to the logging rate. Any delay here and it times out.
+        me7_handler_open_fast_session();
+        sm->last_activity = to_ms_since_boot(get_absolute_time());
+
         BufferMessage msg = {
             .messageType = MSG_ACK,
             .length = 1,

@@ -1,9 +1,21 @@
 #include "me7_handler.h"
 #include "kwp2000.h"
+#include "uart_pio.h"
 #include "log.h"
 
 #include <string.h>
 #include <stdint.h>
+#include "pico/stdlib.h"
+
+// Rate the ECU switches to when StartDiagnosticSession carries baud identifier
+// 0x64. The reference implementation uses the same pair.
+#define LOGGING_BAUD 57600
+#define BAUD_IDENTIFIER_57600 0x64
+
+// Whether the session was opened with a baud switch, in which case the install
+// must not send a plain 10 86 - that would be a second StartDiagnosticSession
+// and would put the rate back.
+static bool fast_session = false;
 
 extern unsigned char _binary_handler_setzi_bin_start[];
 extern unsigned char _binary_handler_setzi_bin_end[];
@@ -176,11 +188,41 @@ bool me7_handler_set_vars(const uint8_t *addresses, size_t address_bytes) {
     return ok;
 }
 
+// Open the manufacturer session and switch the K-line to the logging rate in
+// one command: 10 86 64, where 0x64 is the baud identifier for 57600.
+//
+// This has to happen immediately after the 5-baud init. The ECU appears to
+// accept it only in a short window after the handshake - sent a few seconds
+// later, through the console, it simply times out.
+//
+// The ECU answers at the old rate and switches afterwards, so we follow it.
+bool me7_handler_open_fast_session(void) {
+    fast_session = false;
+
+    const uint8_t frame[] = {0x10, 0x86, BAUD_IDENTIFIER_57600};
+    if (!step("fast session (10 86 64)", frame, sizeof(frame), EXPECT_POSITIVE)) {
+        klog("me7: staying at %u baud", (unsigned)uart_get_baud());
+        return false;
+    }
+
+    // Let the ECU finish switching before we do; it changes rate after its
+    // response has gone out.
+    sleep_ms(10);
+    uart_set_baud(LOGGING_BAUD);
+    fast_session = true;
+
+    klog("me7: K-line now %u baud", (unsigned)LOGGING_BAUD);
+    return true;
+}
+
 bool me7_handler_install(void) {
     klog("me7: installing fast-logging handler");
 
     // 1. Manufacturer session - required before ReadMemoryByAddress/WriteMemory.
-    {
+    //    Skipped when the session was already opened with a baud switch at
+    //    connect: a second StartDiagnosticSession would drop the rate back and
+    //    reset the timing parameters set below.
+    if (!fast_session) {
         const uint8_t frame[] = {0x10, 0x86};
         if (!step("diagnostic session (10 86)", frame, sizeof(frame), EXPECT_POSITIVE)) {
             return false;
