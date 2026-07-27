@@ -415,42 +415,87 @@ Measured with 20 variables / 28-byte samples:
 | 10400 | zeroed | 24.9/s |
 | **57600** | **zeroed** | **63.8/s** |
 
-## ECU RAM map
+## ME7.5 memory architecture
 
-Established by dumping (`dump:ADDR:LEN`) on 2026-07-27. Relevant if you want to put
-anything of your own in RAM — tuning tables, a bigger handler, scratch space.
+Hardware: **Infineon C167** with **external 29F800 flash (8 Mbit = 1 MB)** and an external
+**95040 SPI EEPROM** (adaptations, immobiliser). Map below is from the nefariousmotorsports
+ME7 documentation, and every part of it that this project has touched has matched.
 
-**Segment 038h holds exactly 32 KB: `0x380000` – `0x387FFF`.** Reads at `0x388000` and
-above are refused with a negative response, and `0x387FFF` reads fine, so the boundary is
-hard and clean.
+| Range | What | Size |
+|-------|------|------|
+| `0x000000` – `0x007FFF` | C167 internal boot ROM | 32 K |
+| `0x008000` – `0x00DFFF` | MEM_EXT — `0x380000`–`0x383FFF` mirrored here | |
+| `0x00E000` – `0x00E7FF` | **XRAM** | 2 K |
+| `0x00EF00` – `0x00EFFF` | CAN1 | |
+| `0x00F000` – `0x00F1FF` | extended SFR | 512 B |
+| `0x00F600` – `0x00FDFF` | **IRAM** | 2 K |
+| `0x00FE00` – `0x00FFFF` | SFR | 512 B |
+| `0x380000` – `0x387FFF` | **external SRAM** | **32 K** |
+| `0x800000` – `0x8FFFFF` | external flash | 1 MB |
 
-| Range | What is there |
-|-------|---------------|
-| `0x380000` – `0x38081A` | below the lowest named variable |
-| `0x38081A` – `0x3852DE` | the 562 named variables from the `.ecu` file |
-| `0x3852DE` – ~`0x386000` | **not empty.** Live values, just unnamed by ME7Info |
-| ~`0x386000` – `0x3879FF` | reads back mostly `0xFF` with scattered cleared bits |
-| `0x387A00` – `0x387C46` | **our handler** (582 bytes) |
-| `0x387C46` – `0x387FFF` | mostly zeros, ~950 bytes to the top of RAM |
-| `0x388000` +            | **refused** — past the end of RAM |
+DPP2 maps `0x380000`, which is why compiled code reaches external RAM through it. DPP0/DPP1
+map `0x810000`/`0x814000` — calibration data.
 
-The other populated region is `0x00E3DB` – `0x00FDBA` (188 named variables), which is the
-C167's internal RAM and SFR area. Small and busy; not somewhere to put tables.
+This explains addresses used throughout this project:
 
-**Two cautions before treating any of this as free:**
+- `0xE228` (the service-table pointer we redirect) and the handler's `0xE1F0` / `0xE1CE` /
+  `0xE1CA` constants are all in the **2 K XRAM**.
+- `0x00F89A` (nmot), `0x00FD98` and friends are in the **2 K IRAM**.
+- `0x387A00` (the handler) is in the **32 K external SRAM**.
 
-1. **A gap in the `.ecu` file is not free memory.** That file lists what ME7Info could
-   name, nothing more. The dump at `0x385300` — immediately past the last named variable —
-   came back full of live values, including `0E 5E` (24078, the same ambient-pressure
-   reading the logger sees). The largest gaps *between* named variables (2374 bytes at
-   `0x380EFE`, 1976 at `0x384058`, 1826 at `0x384B8A`) are very likely occupied too.
-2. **`0xFF` does not prove unbacked.** The `0xFF`-with-scattered-zeros pattern around
-   `0x386000` looks like a floating bus, but that is inference, not proof.
+### The flash dump
 
-**The only sound test is empirical:** write a pattern with `0x3D`, run the engine, read it
-back and see whether it survived. The handler itself is the existing proof by example —
-582 bytes at `0x387A00` persist and execute — which is presumably why both handler
-projects chose that address.
+`misc/me7logger-configs/me7logger/8N0906018BP.bin` is 1,048,576 bytes and is a **flash
+dump mapping at `0x800000`**, so:
+
+```
+file offset = address - 0x800000
+```
+
+Verified: the BootRom service table this project redirects lives at far pointer
+`0x81A7D0` (the `D0 27 06 02` originally at `0xE228`), which is file offset `0x1A7D0`, and
+that offset does contain a table of 32-bit far pointers —
+
+```
+00003b66  0000320a  00003266  000032ac  0083a188 ...
+```
+
+— a mix of `0x0000xxxx` (boot ROM) and `0x0083xxxx` (ASW in flash) handler addresses, with
+the first entry being the SNS routine, exactly as `logger_handler`'s README describes. So
+the original service table can be read straight out of the binary.
+
+## Putting your own data in RAM
+
+### Do not use the `.ecu` file for this
+
+`8N0906018BP 0002.ecu` is a **logging artifact and nothing more.** ME7Info produced it by
+pattern-matching a *generic* `me7_std.map` against the flash image, and `[Measurements]`
+lists variables that can be named and scaled for a datalogger. It is **not a memory
+allocation map**: the ASW's own variables, buffers and stack appear nowhere in it, so a gap
+between entries means nothing and a run of entries proves nothing about what shares the
+region. Reading occupancy out of it gives a confident, wrong answer.
+
+### What this project actually measured
+
+Via `dump:ADDR:LEN`, 2026-07-27:
+
+| Fact | Evidence |
+|------|----------|
+| External SRAM is exactly 32 K, ending `0x387FFF` | `0x387FFF` reads; `0x388000` and `0x38F000` are refused. **Matches the documented map** |
+| `0x385300` is live data, not free | Returned values including `0E 5E` = 24078, the ambient pressure the logger reads |
+| `~0x386000` reads `0xFF` with scattered cleared bits | Inference only, not proof of anything |
+| `0x387A00` – `0x387C46` holds the handler, persists and executes | Proof by example, and why both handler projects chose it |
+| `0x387C46` – `0x387FFF` reads mostly zero | ~950 bytes to the ceiling, ownership unknown |
+
+### Where a real answer comes from
+
+1. **The firmware.** The flash dump plus `side-projects/me7.5_decomp/` (a Ghidra project on
+   it). What writes where, and where the stacks live, is answerable there and nowhere else.
+   Note the C167 has both a system stack and a user stack, and they are in IRAM/XRAM rather
+   than the 32 K external SRAM — which is mildly good news for putting tables in `0x38xxxx`.
+2. **Empirical write-persist testing.** Write a pattern with `0x3D`, run the engine through
+   load and RPM, read it back. Only this accounts for what no map describes. Surviving on
+   an idle bench is necessary and nowhere near sufficient.
 
 ## ECU CPU load
 
