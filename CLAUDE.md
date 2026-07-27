@@ -287,10 +287,42 @@ time instead of the ~9s the old sleep-driven version needed, and every chunk's r
 actually checked: 4 consecutive failures aborts the load instead of grinding through 60
 more chunks of timeouts.
 
-The PRJ variant (`handler.bin` at `0x387ACC` + `fill-distributor-table`) was an older,
-unused path and has been **deleted** (2026-07-26). It never worked: `fill_distributor_table`
-wrote the handler pointer in the wrong byte order (`00 38 7A CC` instead of little-endian
-`CC 7A 38 00`). Recorded here in case the approach is ever revisited.
+### The far-pointer format
+
+Service-table entries and the `0xE228` pointer are **not** plain little-endian addresses.
+They are `[offset_lo][offset_hi][page_lo][page_hi]` over 16 KB pages:
+
+```
+0x81A7D0  ->  page 0x0206, offset 0x27D0  ->  D0 27 06 02   (original BootRom table)
+0x387A00  ->  page 0x00E1, offset 0x3A00  ->  00 3A E1 00   (our redirect)
+```
+
+Getting this wrong is what broke the old `fill_distributor_table`: it wrote
+`00 38 7A CC` for `0x387ACC`, which is neither the address nor a byte-swap of it. The
+correct encoding is `CC 3A E1 00`.
+
+### About the deleted `handler.bin` (corrected 2026-07-27)
+
+It was removed in phase 3 as "an older, unused path". That description was wrong, and the
+file is worth understanding because it is the starting point for running your own code.
+
+`handler.bin` (236 bytes, md5 `f6f7f375…`) is **a local Keil build of
+`../../misc/logger_handler/fastlogging_ramhandler.a66`, specialised for this ECU.**
+Rebuilding that project today and converting its Intel HEX output reproduces those exact
+236 bytes. It differs from prj's reference binary (`fastlogging_ramhandler_og.bin`,
+md5 `93aabf72…`) in exactly 16 bytes, being 8 constants:
+
+| this build | prj's reference |
+|---|---|
+| `D0 27 06 02` — the far pointer to *this* ECU's BootRom table | `0x387AC2` / `0x387AC4` |
+| `0xE1CE` recbufptr, `0xE1CA` reclen, `0xE1F0` resptype, baked in | `0x387AC6` / `0x387AC8` / `0x387AC0` |
+
+So prj's build is *parameterised* — it reads a config block you write to `0x387AC0` first —
+while this one has the constants compiled in. Same code otherwise.
+
+What was genuinely broken was only the loader around it: the wrong far-pointer encoding
+above, and loading to `0x387ACC` without writing the config block. Recover the binary with
+`git show 649d93e^:handler.bin` if needed, though rebuilding from source is better.
 
 ### Do not reinstall while the redirect is live
 
