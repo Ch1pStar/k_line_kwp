@@ -158,6 +158,8 @@ stream-off               - Stop free-running sampling
 set-vars:HEX             - Replace the logged variable list (3-byte addresses)
 dump:ADDR:LEN            - Hex dump ECU memory (hex address, decimal length)
 proto-test               - Run the host-link framing self-test (no ECU needed)
+line                     - Sample the K-line RX pin for 200ms (no ECU needed)
+link-usb                 - Move the host link onto this USB port ("console" returns)
 cmd:XXXX                 - Send raw hex KWP2000 command (e.g., cmd:1A9B for ECU ID)
 raw:XXXX                 - Same as cmd: but dumps the unparsed reply bytes (debugging)
 heartbeat:MS             - Set keep-alive interval in ms (use ~2000 during logging)
@@ -210,6 +212,46 @@ The RPi 5 link is uart0 on **GP0 (TX) / GP1 (RX) at 921600**, 8N1. Both boards a
 so TX/RX cross-connect plus a common ground needs no level shifting. These pins are free:
 the K-line is on GP15/GP18 via PIO, and the USB console uses the RP2040's dedicated USB
 peripheral — **USB serial does not consume a UART**.
+
+### Frames over USB (`link-usb`)
+
+The link can move onto the USB CDC port instead, which is how the bench runs while nothing
+is wired to GP0/GP1 (2026-07-28). Type `link-usb` on the console and the port carries COBS
+frames; type `console` to get the text back. `pi-dash`'s `--usb` flag types both words for
+you — see its `server/README.md`.
+
+Only one transport is live at a time, and entering USB mode mutes the console: text and
+frames on one pipe would interleave inside a frame and fail its CRC. Two details that are
+easy to get wrong if this is ever reworked:
+
+- Frames go out with **`putchar_raw`, not `putchar`** — the default stdio driver rewrites
+  0x0A to CRLF, which corrupts any frame whose body contains it.
+- Each frame is followed by an explicit `stdio_flush()`, because the USB driver otherwise
+  waits for a newline that binary data never contains.
+
+The escape word is matched against the raw USB byte stream, so it works even though the
+console frontend has stood down.
+
+### `line` — is the K-line actually connected?
+
+`Timeout waiting for sync byte` is the same message whether the ECU is unpowered, the wire
+is missing, or the wakeup went out and was ignored. `line` separates them, and it needs no
+ECU session:
+
+- **RX:** the pin is sampled with the internal pull **down**, not up. `uart_rx_program_init`
+  enables a pull-up on GP18, so simply reading it high proves nothing — a pin with nothing
+  attached reads high too. Against a pull-down, only an externally driven line stays high
+  (~50-80k internal vs the K-line's ~1k).
+- **TX:** GP15 is driven low and GP18 is read. K-line is one bidirectional wire, so whatever
+  TX pulls low, RX must see. This is the half the timeout cannot diagnose: a wakeup that
+  never reaches the wire looks identical to an ECU that ignored one.
+
+**This caught a real fault, 2026-07-28.** `connect` was timing out on the sync byte. `line`
+reported RX held high externally but TX driving low with **no effect on RX at all** (0/50),
+so the wakeup was never reaching the wire — a shorted resistor leg, as it turned out. After
+the repair the same command read 50/50 low and `connect` succeeded first try. Run this
+before debugging any connect failure; it takes two seconds and tells you which side to look
+at.
 
 ```
 frame   = COBS(payload) 0x00

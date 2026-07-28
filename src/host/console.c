@@ -1,7 +1,11 @@
 #include "console.h"
 #include "command.h"
+#include "host_link.h"
 #include "messages.h"
 #include "proto.h"
+#include "uart_pio.h"
+
+#include "hardware/gpio.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -33,6 +37,8 @@ static void print_help(void) {
     printf("heartbeat:MS     - Set keep-alive interval in ms\n");
     printf("baud:N           - Set K-line bit rate (e.g. baud:57600)\n");
     printf("proto-test       - Run the host-link framing self-test\n");
+    printf("line             - Sample the K-line RX pin (is the ECU powered and wired?)\n");
+    printf("link-usb         - Hand this USB port to the binary host link (type 'console' to return)\n");
     printf("help             - Show this help\n");
     printf("------------------------\n\n");
 }
@@ -189,6 +195,65 @@ static void process_command(const char *text) {
         return;
     }
 
+    // "Timeout waiting for sync byte" is the same message whether the ECU is
+    // unpowered, the K-line is unwired, or the wakeup went out and was ignored.
+    // This separates the first two from the third.
+    //
+    // Reading the pin as-is proves nothing: uart_rx_program_init() enables the
+    // RP2040's internal pull-up on it, so a pin with nothing attached also reads
+    // high. The test is to pull *down* instead and see whether the line stays
+    // high anyway. The internal pulls are ~50-80k while a K-line's is ~1k, so an
+    // externally driven line wins easily; a floating pin follows the pull-down.
+    if (strcmp(text, "line") == 0) {
+        gpio_set_pulls(PIO_RX_PIN, false, true);   // pull-down, no pull-up
+        sleep_ms(5);
+        int high = 0;
+        for (int i = 0; i < 200; i++) {
+            if (gpio_get(PIO_RX_PIN)) high++;
+            sleep_ms(1);
+        }
+        gpio_set_pulls(PIO_RX_PIN, true, false);   // back to the RX default
+
+        printf("K-line RX (GP%d) against a pull-down: %d/200 high - %s\n",
+               PIO_RX_PIN, high,
+               high >= 195 ? "held high externally: the line is wired and powered"
+               : high <= 5 ? "follows the pull-down: nothing is driving it - check the "
+                             "K-line wire, ECU power and ignition"
+                           : "toggling: something is talking on the line");
+
+        // K-line is a single bidirectional wire, so whatever TX pulls low, RX
+        // should see. That makes this a real test of the transmit path - the
+        // half the sync-byte timeout cannot distinguish, because a wakeup that
+        // never reaches the wire looks exactly like an ECU that ignored it.
+        uart_pio_release_tx_pin();
+        sleep_ms(5);
+        const bool idle = gpio_get(PIO_RX_PIN);
+        gpio_put(PIO_TX_PIN, 0);
+        sleep_ms(20);
+        int low = 0;
+        for (int i = 0; i < 50; i++) {
+            if (!gpio_get(PIO_RX_PIN)) low++;
+            sleep_ms(1);
+        }
+        gpio_put(PIO_TX_PIN, 1);
+
+        printf("K-line TX (GP%d) driven low: RX read %d/50 low (idle was %s) - %s\n",
+               PIO_TX_PIN, low, idle ? "high" : "low",
+               low >= 45 ? "TX reaches the line; the ECU is hearing the wakeup and not answering"
+                         : "TX does NOT reach the line - check the GP15 wire and the "
+                           "K-line driver");
+        return;
+    }
+
+    // Hand the port over. The banner is the last text the bridge sees, and it
+    // ends in a newline so a line-oriented reader is not left waiting; after
+    // this everything on USB is COBS frames until someone types "console".
+    if (strcmp(text, "link-usb") == 0) {
+        printf("host link now on USB; console muted. Type 'console' to return.\n");
+        host_link_set_usb(true);
+        return;
+    }
+
     printf("Command received: \"%s\"\n", text);
 
     Command cmd;
@@ -211,6 +276,10 @@ static void process_command(const char *text) {
 // One message from core 0. The drain loop lives in host.c, which fans each
 // message out to every frontend - the queue has a single consumer by design.
 void console_on_message(const BufferMessage *msg) {
+    // In USB link mode the port carries frames; a printf here would land in the
+    // middle of one.
+    if (host_link_usb_active()) return;
+
     {
         switch (msg->messageType) {
             case MSG_ACK:
@@ -279,6 +348,13 @@ void console_poll_input(void) {
     static char cmd_buffer[512];
     static int buf_pos = 0;
     int c;
+
+    // host_link_poll() owns USB input in that mode, including the escape word
+    // that gets the port back.
+    if (host_link_usb_active()) {
+        buf_pos = 0;
+        return;
+    }
 
     while ((c = getchar_timeout_us(0)) != PICO_ERROR_TIMEOUT) {
         if (c == '\n' || c == '\r') {

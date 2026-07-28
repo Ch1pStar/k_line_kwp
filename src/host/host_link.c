@@ -3,6 +3,7 @@
 #include "command.h"
 #include "messages.h"
 
+#include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/uart.h"
@@ -13,8 +14,15 @@
 #define HOST_UART_RX_PIN 1
 #define HOST_UART_BAUD   921600
 
+// Typed on the USB port to get the text console back without replugging. Framed
+// traffic can only contain 0x00 as a delimiter, so a run of printable bytes this
+// specific does not occur inside a frame.
+static const char USB_ESCAPE[] = "console";
+
 static ProtoDecoder decoder;
 static uint8_t tx_sequence = 0;
+static bool usb_mode = false;
+static uint8_t escape_matched = 0;
 
 void host_link_init(void) {
     uart_init(HOST_UART, HOST_UART_BAUD);
@@ -36,9 +44,17 @@ static void send_frame(uint8_t type, const uint8_t *data, size_t length) {
     if (n == 0) return;  // payload too large to frame; dropping beats truncating
     tx_sequence++;
 
-    // Nothing is attached to the link yet, so this drains at line rate into an
-    // empty FIFO. With a receiver present it is still only ~0.2ms for a sample
-    // frame at 921600.
+    if (usb_mode) {
+        // putchar_raw, not putchar: the default stdio driver rewrites 0x0A to
+        // CRLF, which inside a frame is a corrupt byte and a failed CRC. The
+        // explicit flush is because stdio's USB driver otherwise waits for a
+        // newline that binary data never contains.
+        for (size_t i = 0; i < n; i++) putchar_raw(wire[i]);
+        stdio_flush();
+        return;
+    }
+
+    // With a receiver present this is only ~0.2ms for a sample frame at 921600.
     uart_write_blocking(HOST_UART, wire, n);
 }
 
@@ -119,15 +135,51 @@ static void handle_command_frame(const ProtoFrame *frame) {
     send_frame(PROTO_ACK, reply, sizeof(reply));
 }
 
-void host_link_poll(void) {
+void host_link_set_usb(bool on) {
+    if (usb_mode == on) return;
+    usb_mode = on;
+    escape_matched = 0;
+    // The half-decoded frame belonged to the other transport.
+    proto_decoder_reset(&decoder);
+}
+
+bool host_link_usb_active(void) {
+    return usb_mode;
+}
+
+static void feed(uint8_t byte) {
     ProtoFrame frame;
+    if (proto_decode_byte(&decoder, byte, &frame) && frame.type == PROTO_CMD) {
+        handle_command_frame(&frame);
+    }
+}
+
+void host_link_poll(void) {
+    if (usb_mode) {
+        // console_poll_input() has stood down, so this owns USB input. Each byte
+        // goes to the decoder and to the escape matcher; the matcher is what
+        // lets a human take the port back with a typed word.
+        int c;
+        while ((c = getchar_timeout_us(0)) != PICO_ERROR_TIMEOUT) {
+            const uint8_t byte = (uint8_t)c;
+
+            escape_matched = (byte == (uint8_t)USB_ESCAPE[escape_matched])
+                                 ? (uint8_t)(escape_matched + 1)
+                                 : (byte == (uint8_t)USB_ESCAPE[0] ? 1 : 0);
+            if (USB_ESCAPE[escape_matched] == '\0') {
+                host_link_set_usb(false);
+                printf("\nhost link back on uart0; console live. Type 'help'.\n");
+                return;
+            }
+
+            feed(byte);
+        }
+        return;
+    }
 
     // Drain the whole FIFO each time rather than a byte per loop: at 921600 the
     // 32-byte FIFO fills in ~0.35ms, well under the core 1 loop period.
     while (uart_is_readable(HOST_UART)) {
-        const uint8_t byte = uart_getc(HOST_UART);
-        if (proto_decode_byte(&decoder, byte, &frame) && frame.type == PROTO_CMD) {
-            handle_command_frame(&frame);
-        }
+        feed(uart_getc(HOST_UART));
     }
 }
